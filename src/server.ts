@@ -15,7 +15,7 @@ import type {
 import { z } from 'zod'
 
 const RESOURCE_URI = 'ui://excalidraw-editor/app'
-const FONT_ORIGIN = 'https://esm.run'
+const FONT_ORIGIN = 'https://esm.sh'
 const FONT_PATH =
   `${FONT_ORIGIN}/@excalidraw/excalidraw@0.18.0/dist/prod/fonts/`
 const CSP = {

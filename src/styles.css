@@ -10,7 +10,7 @@ body,
 
 [data-excalidraw-m0] {
   position: relative;
-  min-height: 480px;
+  min-height: 0;
   background: #f8f9fa;
 }
 

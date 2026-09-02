@@ -24,7 +24,7 @@ declare global {
 }
 
 window.EXCALIDRAW_ASSET_PATH =
-  'https://esm.run/@excalidraw/excalidraw@0.18.0/dist/prod/'
+  'https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/'
 
 const app = new App(
   { name: 'Excalidraw Editor M0', version: '0.0.0' },
@@ -64,7 +64,7 @@ async function embeddedBlob(name: string, mimeType: string, blob: Blob) {
 function Canvas(): React.JSX.Element {
   const [api, setApi] = useState<ExcalidrawImperativeAPI>()
   const [displayMode, setDisplayMode] = useState('inline')
-  const [status, setStatus] = useState('Connecting')
+  const [status, setStatus] = useState('Ready')
 
   useEffect(() => {
     if (api === undefined) return
