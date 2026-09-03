@@ -21,7 +21,7 @@ M1 已完成 S1-S4：
 - Node.js：`v24.18.0`
 - pnpm：`10.25.0`
 - 分支：`main`
-- M1 生产代码 HEAD：`6cec45c`
+- M1 生产代码 HEAD：`be14eb5`
 - 完整日志：`.tmp/m1/m1-self-test.log`
 - 日志 SHA-256：`c19c2ddcc4e38c28740322c7b135a9ffd67f1b4b27486e1b7756799b11dc3547`
 
@@ -34,6 +34,7 @@ M1 已完成 S1-S4：
 | `pnpm test` | build PASS；测试 15/15 PASS；packed install PASS |
 | F3 `node --test tests/m1-mcp.test.mjs tests/m0.test.mjs` | PASS，4/4 |
 | F3 目标 `open_canvas -> pull_canvas` 协议链 | PASS，revision `39d588...`，92 elements |
+| F3 真实 DSH 新调用与关联 View | PASS，最新 View `elementCount() = 92`、状态 `Ready` |
 
 `pnpm test` 的 Node 测试耗时约 12.5 秒，其中 packed install 约 11.6 秒。
 本环境的命令包装器在全部断言通过后阻止 pnpm 清理
@@ -60,7 +61,7 @@ IIFE 产物可运行，warning 治理保留到 Release Hardening。
 - `5b6407c feat: add project lifecycle storage`
 - `ec8f607 feat: add canvas lifecycle operations`
 - `6cec45c feat: wire workspace canvas MCP tools`
-- `本提交 fix: load opened canvas in MCP App`
+- `be14eb5 fix: load opened canvas in MCP App`
 
 功能实现为数小时量级；集中自测与失败归因、定向复验和收口为数十分钟量级。
 
@@ -205,29 +206,29 @@ actual: undefined
 | 目标协议重放 | open/pull revision 一致；`changed=true`；标准文档 92 elements、4 个 appState keys、0 files |
 
 真实 Host PID `57670` 在整个 F3 phase 保持存活，`http://127.0.0.1:3080/`
-持续返回 HTTP 200。build 后仅 Excalidraw MCP phase 重连；新 PID 为
-connection generation 为 `868888f1-ee1a-4a7f-ac3f-1f8306105f2a`，
-`open_canvas` View 为 `1a57e711-bba3-4284-8403-6d898a51df30`。
+持续返回 HTTP 200。生产修复已提交为
+`be14eb5 fix: load opened canvas in MCP App`。
 
-仓库 Playwright 使用现存 Chromium 精确点击了
-`page.getByText('创建一个默认画布', { exact: true })`。该文本节点为
-`SPAN`，父节点为已选中的 `DIV[role=treeitem]`。页面共有 9 个 frame，
-其中 4 个包含 `window.__EXCALIDRAW_M0__`，但
-`elementCount()` 均为 2：
+仓库 Playwright 复用现存 Chromium profile，精确进入 Session
+`创建一个默认画布`，并且只发送一次：
 
-- 两个历史 create/open_project 结果显示
-  `Tool result did not identify a canvas`，因为持久化 Session 记录来自 F3
-  之前，不含新的顶层 `canvasPath/revision`。
-- 两个历史 open_canvas 结果显示
-  `canvas is not bound to this app session`，因为最终 build 只重启了
-  Excalidraw MCP phase，新的 server 进程没有旧进程的内存 Session 绑定。
+```text
+请只调用 mcp__excalidraw__open_canvas 打开 projectPath=excalidraw/default-canvas、
+canvasPath=excalidraw/default-canvas/main.excalidraw，不要执行其他操作。
+```
 
-截图 `.tmp/m1/f3-runtime-target-attempt2.png` 证明原 Workspace 与原 Session
-已打开；View 位于当前滚动区域之外，截图没有目标画布像素。按本轮最多两次
-定向尝试的限制，未再提交新的模型调用。因此本节只将最终 build 的协议与
-数据链记为 PASS，不将真实 DSH 像素渲染记为 PASS。用户仍需在该 Session
-重新调用一次 `open_canvas`，确认新工具结果关联 View 的
-`elementCount() === 92`；M1 保持 `AWAITING_ACCEPTANCE`。
+模型仅执行 `mcp__excalidraw__open_canvas`，工具返回
+`Opened Excalidraw canvas.`，没有 quota、模型或工具阻塞。调用完成后页面有
+13 个 frame、6 个 `window.__EXCALIDRAW_M0__` hook；最新 hook 位于 frame
+index 12，`elementCount() = 92`，View 状态为 `Ready`。Playwright 将该 View
+滚动到可见区域后，截图中可见完整画布内容：
+
+- 截图：`.tmp/m1/f3-runtime-92-elements.png`
+- 调用与 frame 证据：`.tmp/m1/f3-runtime-call.json`
+
+F3 的真实 DSH 新调用、`open_canvas -> pull_canvas` 数据链和 92-element
+关联 View 均已闭环。M1 仍保持 `AWAITING_ACCEPTANCE`，等待用户完成
+Milestone 验收决定。
 
 ## 用户验收用例
 
