@@ -58,6 +58,7 @@ shape used by this workspace:
 ```yaml
 - id: mcp-apps
   config:
+    maxBodyBytes: 16777216
     servers:
       - serverName: excalidraw
         transport: stdio
@@ -71,6 +72,14 @@ shape used by this workspace:
 `forwardWorkspace` is required for model-visible project and canvas tools.
 The server accepts the Workspace only from trusted DSH request metadata,
 never from a model-visible filesystem-path argument.
+
+`maxBodyBytes: 16777216` is also required. The current bundled App Resource is
+about 8.19 MiB; a smaller limit such as `2097152` lets tools succeed but makes
+the linked view fail with `MCP App unavailable` and
+`MCP App resource is too large`. Change the value in
+`$DSH_HOME/profiles/web/cordis.patch.yml`; a running DSH profile reloads valid
+config edits automatically. Re-open the Session after HMR. Restart only that
+DSH process if the profile does not reload.
 
 Validate the composed configuration, then start DSH:
 

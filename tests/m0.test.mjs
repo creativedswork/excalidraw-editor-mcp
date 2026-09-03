@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const officialPath = new URL('../dist/official.js', import.meta.url)
+const readmePath = new URL('../README.md', import.meta.url)
 const serverPath = fileURLToPath(new URL('../dist/server.js', import.meta.url))
 
 test('official Excalidraw conversion, restore, and serialization round trip', async () => {
@@ -50,6 +52,11 @@ test('stdio server exposes M1 tools and the bundled MCP App resource', async () 
     assert.equal(resource.contents[0]?.mimeType, 'text/html;profile=mcp-app')
     assert.match(resource.contents[0]?.text ?? '', /data-excalidraw-m0/)
     assert.match(resource.contents[0]?.text ?? '', /__EXCALIDRAW_M0__/)
+
+    const readme = await readFile(readmePath, 'utf8')
+    const configuredLimit = Number(readme.match(/maxBodyBytes:\s*(\d+)/)?.[1])
+    assert.equal(configuredLimit, 16 * 1024 * 1024)
+    assert.ok(Buffer.byteLength(resource.contents[0]?.text ?? '', 'utf8') <= configuredLimit)
   } finally {
     await client.close()
   }

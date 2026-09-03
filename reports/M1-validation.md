@@ -71,6 +71,7 @@ IIFE 产物可运行，warning 治理保留到 Release Hardening。
 ```yaml
 - id: mcp-apps
   config:
+    maxBodyBytes: 16777216
     servers:
       - serverName: excalidraw
         transport: stdio
@@ -94,7 +95,12 @@ Session。必须提前配置有效的模型凭据和可用额度；默认提供�
 `DEEPSEEK_API_KEY`。`forwardWorkspace: true` 只应授予受信任的本地 stdio
 Server。
 
-## 真实 DSH Browser smoke
+当前 App Resource 的 `dist/view.js` 为 8,023,750 B，
+`dist/style.css` 为 163,399 B，合计 8,187,149 B。必须保留
+`maxBodyBytes: 16777216`；`2097152` 会在工具成功后导致 Host 拒绝关联
+Resource。
+
+## F1 真实 DSH Browser smoke
 
 为避免影响旧实例，先确认 `3094` 的 Host PID `91636` 和 MCP PID `92200`
 来自 M0 运行，且 MCP 进程早于 M1；该实例未停止、未重启。随后使用独立
@@ -123,6 +129,38 @@ name "Acceptance Demo"，mutationId "acceptance-create-1"。
 已注册；但模型未产生 tool call，因此没有创建 `acceptance/demo`，也没有
 MCP App iframe。该结果是外部额度阻塞，不能记为产品 PASS，也没有证据表明
 存在生产实现缺陷。补充有效额度后应从下列 Case 1 重新验收。
+
+## F2 Host Resource 上限复验
+
+用户验收时，`create_project` 与 `open_project` 已成功，工具结果包含
+`resourceUri: ui://excalidraw-editor/app`，但关联视图显示
+`MCP App unavailable` / `MCP App resource is too large`。根因是当前
+`$HOME/.dsh/profiles/web/cordis.patch.yml` 的
+`mcp-apps.config.maxBodyBytes` 仍为 `2097152`，小于 8,187,149 B 的当前
+App Resource。
+
+恢复步骤只修改该配置值：
+
+```yaml
+- id: mcp-apps
+  config:
+    maxBodyBytes: 16777216
+```
+
+DSH 配置 HMR 在未重启 Host 的情况下生效；PID `57670` 持续监听
+`127.0.0.1:3080`，readiness 保持 HTTP 200。重新打开已有 Session
+`创建一个默认画布` 后，原错误和 loading 文案均消失，无需点击 Retry 或
+提交新工具调用：
+
+- `open_project` 行显示 Active。
+- 页面显示两个 sandbox iframe，外层可见区域分别为 `982 x 546` 与
+  `748 x 320`，并显示 fullscreen 控件。
+- 两个 App 都完成 Excalidraw `0.18.0` 字体加载，资源来自 `esm.sh`。
+
+Browser 截图接口在 offscreen 捕获时被限流，未能保存
+`f2-after-fix.png`；这是证据采集限制，不是产品失败。本次只确认关联
+MCP App shell 的加载与渲染路径，不声称持久化画布内容已同步到 View，也
+不声称取得跨域 canvas 像素数据。
 
 ## 用户验收用例
 
