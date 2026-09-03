@@ -10,6 +10,20 @@ const excalidrawCss = join(
 
 export default defineConfig([
   {
+    name: 'excalidraw-editor-mcp/canvas-store',
+    entry: { 'canvas-store': 'src/canvas-store.ts' },
+    outDir: 'dist',
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    dts: false,
+    clean: false,
+    fixedExtension: false,
+    outputOptions: {
+      entryFileNames: '[name].js',
+    },
+  },
+  {
     name: 'excalidraw-editor-mcp/server',
     entry: { server: 'src/server.ts' },
     outDir: 'dist',
