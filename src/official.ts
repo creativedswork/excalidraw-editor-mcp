@@ -441,6 +441,95 @@ function reorderElement(
   })
 }
 
+function referenceId(value: unknown): string | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as { elementId?: unknown }).elementId === 'string'
+    ? (value as { elementId: string }).elementId
+    : undefined
+}
+
+export function restoreOfficialCanvasDocument(
+  document: CanvasDocument,
+): CanvasDocument {
+  const elements = document.elements as Array<Record<string, unknown>>
+  const active = elements.filter(element => element.isDeleted !== true)
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const element of active) {
+    if (typeof element.id !== 'string' || typeof element.type !== 'string') {
+      throw new Error('canvas elements require string id and type')
+    }
+    if (byId.has(element.id)) throw new Error(`duplicate element id: ${element.id}`)
+    byId.set(element.id, element)
+  }
+  const requireElement = (id: string, sourceId: string): Record<string, unknown> => {
+    const target = byId.get(id)
+    if (target === undefined) {
+      throw new Error(`element ${sourceId} references missing element ${id}`)
+    }
+    return target
+  }
+
+  for (const element of active) {
+    const id = element.id as string
+    const startId = referenceId(element.startBinding)
+    const endId = referenceId(element.endBinding)
+    for (const targetId of [startId, endId]) {
+      if (targetId === undefined) continue
+      const target = requireElement(targetId, id)
+      const reverse = Array.isArray(target.boundElements)
+        && target.boundElements.some(item => (
+          item !== null
+          && typeof item === 'object'
+          && (item as { id?: unknown }).id === id
+        ))
+      if (!reverse) throw new Error(`element ${id} has an invalid binding to ${targetId}`)
+    }
+    if (typeof element.containerId === 'string') {
+      const container = requireElement(element.containerId, id)
+      const reverse = Array.isArray(container.boundElements)
+        && container.boundElements.some(item => (
+          item !== null
+          && typeof item === 'object'
+          && (item as { id?: unknown }).id === id
+        ))
+      if (!reverse) {
+        throw new Error(`element ${id} has an invalid binding to ${element.containerId}`)
+      }
+    }
+    if (typeof element.frameId === 'string') {
+      const frame = requireElement(element.frameId, id)
+      if (frame.type !== 'frame') {
+        throw new Error(`element ${id} references a non-frame element`)
+      }
+    }
+    if (Array.isArray(element.boundElements)) {
+      for (const item of element.boundElements) {
+        if (item === null || typeof item !== 'object'
+          || typeof (item as { id?: unknown }).id !== 'string') {
+          throw new Error(`element ${id} has an invalid boundElements entry`)
+        }
+        requireElement((item as { id: string }).id, id)
+      }
+    }
+    if (element.type === 'image') {
+      if (typeof element.fileId !== 'string' || document.files[element.fileId] === undefined) {
+        throw new Error(`image element ${id} references missing file`)
+      }
+    }
+  }
+
+  const restored = restore(document, null, null, {
+    refreshDimensions: false,
+    repairBindings: true,
+  })
+  return JSON.parse(serializeAsJSON(
+    restored.elements,
+    restored.appState,
+    restored.files,
+    'local',
+  )) as CanvasDocument
+}
+
 export function applyOfficialCanvasChanges(
   document: CanvasDocument,
   changes: CanvasChange[],

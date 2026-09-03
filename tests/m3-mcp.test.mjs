@@ -519,3 +519,165 @@ test('relationship operations preserve ordering and repair removed references', 
     index === 0 || active[index - 1].index < item.index
   )))
 })
+
+test('replace_canvas validates and preserves a restorable full document', async (t) => {
+  const state = await fixture(t)
+  const seeded = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: state.revision,
+      mutationId: 'replace-seed',
+      changes: [
+        {
+          op: 'add',
+          clientRef: 'source',
+          element: {
+            type: 'rectangle',
+            x: 20,
+            y: 20,
+            width: 160,
+            height: 80,
+            label: { text: 'Source' },
+          },
+        },
+        {
+          op: 'add',
+          clientRef: 'target',
+          element: { type: 'ellipse', x: 300, y: 20, width: 160, height: 80 },
+        },
+        {
+          op: 'add',
+          clientRef: 'edge',
+          element: {
+            type: 'arrow',
+            x: 180,
+            y: 60,
+            points: [[0, 0], [120, 0]],
+            startRef: 'source',
+            endRef: 'target',
+          },
+        },
+      ],
+    },
+    _meta: state.meta,
+  })
+  assert.equal(seeded.isError, undefined, seeded.content[0]?.text)
+  const inspected = await state.client.callTool({
+    name: 'inspect_canvas',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      includeDocument: true,
+      limit: 100,
+    },
+    _meta: state.meta,
+  })
+  const replacement = structuredClone(inspected.structuredContent.document)
+  replacement.elements.find(element => element.type === 'rectangle').customData = {
+    importedField: { mode: 'preserve' },
+  }
+  replacement.appState.viewBackgroundColor = '#fff4e6'
+
+  const request = {
+    projectPath: 'designs/m3',
+    canvasPath: state.canvasPath,
+    baseRevision: seeded.structuredContent.revision,
+    mutationId: 'replace-valid',
+    document: replacement,
+  }
+  const replaced = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: request,
+    _meta: state.meta,
+  })
+  assert.equal(replaced.isError, undefined, replaced.content[0]?.text)
+  assert.notEqual(replaced.structuredContent.revision, seeded.structuredContent.revision)
+
+  const exactRetry = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: request,
+    _meta: state.meta,
+  })
+  assert.equal(exactRetry.isError, undefined, exactRetry.content[0]?.text)
+  assert.equal(exactRetry.structuredContent.revision, replaced.structuredContent.revision)
+
+  const mismatch = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: {
+      ...request,
+      document: {
+        ...replacement,
+        appState: { ...replacement.appState, viewBackgroundColor: '#ffffff' },
+      },
+    },
+    _meta: state.meta,
+  })
+  assert.equal(mismatch.isError, true)
+  assert.match(mismatch.content[0].text, /mutationId was already used with different input/)
+
+  const persisted = JSON.parse(await readFile(join(state.workspace, state.canvasPath), 'utf8'))
+  assert.deepEqual(
+    persisted.elements.find(element => element.type === 'rectangle').customData,
+    { importedField: { mode: 'preserve' } },
+  )
+  assert.equal(persisted.appState.viewBackgroundColor, '#fff4e6')
+  const beforeInvalid = await readFile(join(state.workspace, state.canvasPath), 'utf8')
+
+  const invalidDocument = structuredClone(persisted)
+  invalidDocument.elements.find(element => element.type === 'arrow').startBinding.elementId = 'missing'
+  const invalid = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: replaced.structuredContent.revision,
+      mutationId: 'replace-invalid',
+      document: invalidDocument,
+    },
+    _meta: state.meta,
+  })
+  assert.equal(invalid.isError, true)
+  assert.match(invalid.content[0].text, /missing element/)
+  assert.equal(await readFile(join(state.workspace, state.canvasPath), 'utf8'), beforeInvalid)
+
+  const oversized = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: replaced.structuredContent.revision,
+      mutationId: 'replace-oversized',
+      document: {
+        ...persisted,
+        appState: { ...persisted.appState, oversized: 'x'.repeat(4 * 1024 * 1024) },
+      },
+    },
+    _meta: state.meta,
+  })
+  assert.equal(oversized.isError, true)
+  assert.match(oversized.content[0].text, /canvas exceeds/)
+  assert.equal(await readFile(join(state.workspace, state.canvasPath), 'utf8'), beforeInvalid)
+
+  const stale = await state.client.callTool({
+    name: 'replace_canvas',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: seeded.structuredContent.revision,
+      mutationId: 'replace-stale',
+      document: persisted,
+    },
+    _meta: state.meta,
+  })
+  assert.equal(stale.isError, true)
+  assert.match(stale.content[0].text, /revision conflict/)
+
+  const prompts = await state.client.listPrompts()
+  assert.ok(prompts.prompts.some(prompt => prompt.name === 'excalidraw-authoring'))
+  const prompt = await state.client.getPrompt({ name: 'excalidraw-authoring' })
+  assert.match(prompt.messages[0].content.text, /inspect_canvas/)
+  assert.match(prompt.messages[0].content.text, /apply_canvas_changes/)
+  assert.match(prompt.messages[0].content.text, /revision conflict/)
+})

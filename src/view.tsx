@@ -21,6 +21,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   appStateForExternalUpdate,
+  askAiMessage,
   canvasContentSummary,
   conflictCopyPath,
   editorStateAfterAction,
@@ -179,6 +180,8 @@ function Canvas(): React.JSX.Element {
   const [canvas, setCanvas] = useState(pendingCanvas)
   const [revision, setRevision] = useState(canvas?.revision)
   const [syncState, setSyncState] = useState<EditorSyncState>('Loading')
+  const [askText, setAskText] = useState('')
+  const [asking, setAsking] = useState(false)
   const syncStateRef = useRef<EditorSyncState>('Loading')
   const baseSummary = useRef('')
   const baseRevision = useRef('')
@@ -464,6 +467,32 @@ function Canvas(): React.JSX.Element {
     await publishSavedContext(snapshot.canvasPath, snapshot.revision)
   }
 
+  const askAi = async (): Promise<void> => {
+    const message = askAiMessage(
+      syncStateRef.current,
+      canvas?.canvasPath,
+      revision,
+      api === undefined ? [] : Object.keys(api.getAppState().selectedElementIds),
+      askText,
+    )
+    if (message === undefined) {
+      setStatus(syncStateRef.current === 'Clean'
+        ? 'Enter an AI request'
+        : 'Save before asking AI')
+      return
+    }
+    setAsking(true)
+    setStatus('Sending AI request')
+    try {
+      const sent = await app.sendMessage(message)
+      if (sent.isError) throw new Error('Host rejected the AI request')
+      setAskText('')
+      setStatus('AI request sent')
+    } finally {
+      setAsking(false)
+    }
+  }
+
   const download = async (format: 'json' | 'svg' | 'png'): Promise<void> => {
     if (api === undefined) return
     setStatus(`Exporting ${format.toUpperCase()}`)
@@ -551,6 +580,33 @@ function Canvas(): React.JSX.Element {
           onClick={() => void reload()}
         >
           Reload
+        </button>
+        <input
+          type="text"
+          data-ask-ai-input
+          aria-label="Ask AI request"
+          placeholder="Ask AI..."
+          maxLength={1_000}
+          value={askText}
+          onChange={event => setAskText(event.currentTarget.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault()
+              void askAi().catch(error => {
+                setStatus(error instanceof Error ? error.message : String(error))
+              })
+            }
+          }}
+        />
+        <button
+          type="button"
+          data-ask-ai
+          disabled={syncState !== 'Clean' || askText.trim() === '' || asking}
+          onClick={() => void askAi().catch(error => {
+            setStatus(error instanceof Error ? error.message : String(error))
+          })}
+        >
+          Ask AI
         </button>
         <button
           type="button"

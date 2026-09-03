@@ -330,6 +330,25 @@ function createServer(): McpServer {
     version: '0.0.0',
   })
 
+  server.registerPrompt('excalidraw-authoring', {
+    title: 'Excalidraw authoring workflow',
+    description: 'Recommended inspect, edit, conflict retry, and View workflow.',
+  }, async () => ({
+    messages: [{
+      role: 'user',
+      content: {
+        type: 'text',
+        text: [
+          'Use inspect_canvas with filters and cursor pagination before editing.',
+          'Prefer one apply_canvas_changes batch with the inspected baseRevision.',
+          'On a revision conflict, inspect again and retry with a new mutationId.',
+          'Use replace_canvas only for valid fixed-version fields not modeled by semantic changes.',
+          'Open the project or canvas only when the user needs the interactive View.',
+        ].join('\n'),
+      },
+    }],
+  }))
+
   registerAppTool(server, 'list_projects', {
     title: 'List Excalidraw projects',
     description: 'Lists managed and discovered Excalidraw projects in the current Workspace.',
@@ -563,6 +582,25 @@ function createServer(): McpServer {
     await (await projectStore(_meta)).applyCanvasChanges({
       ...input,
       changes: input.changes as CanvasChange[],
+    }),
+  ))
+
+  registerAppTool(server, 'replace_canvas', {
+    title: 'Replace Excalidraw canvas',
+    description: 'Validates, restores, and atomically replaces one complete standard document.',
+    inputSchema: {
+      projectPath: pathSchema,
+      canvasPath: pathSchema,
+      baseRevision: revisionSchema,
+      mutationId: mutationSchema,
+      document: canvasDocumentSchema,
+    },
+    _meta: { ui: { visibility: ['model'] } },
+  }, async (input, { _meta }) => result(
+    'Replaced Excalidraw canvas.',
+    await (await projectStore(_meta)).replaceCanvas({
+      ...input,
+      document: input.document as CanvasDocument,
     }),
   ))
 

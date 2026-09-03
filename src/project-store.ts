@@ -17,6 +17,7 @@ import {
   MutationConflictError,
   RevisionConflictError,
   SafeWorkspace,
+  canonicalCanvasBytes,
   emptyCanvasDocument,
 } from './canvas-store.js'
 import type { CanvasChange } from './official.js'
@@ -216,6 +217,54 @@ export class ProjectStore {
         affectedElementIds: transformed.affectedElementIds,
         summary: { changeCount: input.changes.length },
         warnings: transformed.warnings,
+      }
+    }))
+  }
+
+  async replaceCanvas(input: {
+    projectPath: string
+    canvasPath: string
+    baseRevision: string
+    mutationId: string
+    document: CanvasDocument
+  }): Promise<{
+    canvasPath: string
+    revision: string
+    changed: boolean
+    validation: { valid: true; elementCount: number }
+  }> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'replaceCanvas',
+      ...input,
+      projectPath,
+      canvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const project = await this.inspect(projectPath)
+      this.requireCanvas(project, canvasPath)
+      const current = await this.canvases.read(canvasPath)
+      if (current.revision !== input.baseRevision) {
+        throw new RevisionConflictError(current.revision)
+      }
+      canonicalCanvasBytes(input.document)
+      const { restoreOfficialCanvasDocument } = await import('./official.js')
+      const document = restoreOfficialCanvasDocument(input.document)
+      const canvas = await this.canvases.write(
+        canvasPath,
+        input.baseRevision,
+        `canvas-replace:${input.mutationId}`,
+        document,
+      )
+      return {
+        canvasPath,
+        revision: canvas.revision,
+        changed: canvas.changed,
+        validation: {
+          valid: true,
+          elementCount: canvas.document.elements.length,
+        },
       }
     }))
   }

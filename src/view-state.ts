@@ -152,3 +152,30 @@ export function savedCanvasModelContext(
     structuredContent,
   }
 }
+
+export function askAiMessage(
+  state: EditorSyncState,
+  canvasPath: string | undefined,
+  revision: string | undefined,
+  selectedIds: readonly string[],
+  userText: string,
+) {
+  const request = userText.trim().slice(0, 1_000)
+  if (
+    state !== 'Clean'
+    || canvasPath === undefined
+    || revision === undefined
+    || request.length === 0
+  ) return undefined
+  const selection = selectedIds.slice(0, 20).map(id => id.slice(0, 128))
+  return {
+    role: 'user' as const,
+    content: [{
+      type: 'text' as const,
+      text: [
+        `请基于 ${canvasPath.slice(0, 512)} 的 revision ${revision}，`,
+        `调整当前选中的 ${selection.length === 0 ? '(none)' : selection.join(', ')}：${request}`,
+      ].join('\n'),
+    }],
+  }
+}
