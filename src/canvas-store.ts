@@ -54,6 +54,12 @@ export interface CanvasWriteResult extends CanvasSnapshot {
   changed: boolean
 }
 
+export interface CanvasDeleteResult {
+  canvasPath: string
+  revision: string
+  deleted: true
+}
+
 export class RevisionConflictError extends Error {
   constructor(
     public readonly currentRevision: string,
@@ -332,20 +338,129 @@ export class CanvasStore {
     ))
   }
 
+  async rename(
+    canvasPath: string,
+    newCanvasPath: string,
+    baseRevision: string,
+    mutationId: string,
+  ): Promise<CanvasWriteResult> {
+    const safe = this.workspace.validateCanvasPath(canvasPath)
+    const destination = this.workspace.validateCanvasPath(newCanvasPath)
+    if (safe === destination) throw new Error('newCanvasPath must differ from canvasPath')
+    if (!revisionPattern.test(baseRevision)) throw new Error('invalid baseRevision')
+    const fingerprint = canvasRevision(Buffer.from(
+      `rename\0${safe}\0${destination}\0${baseRevision}`,
+    ))
+    return this.mutations.run(mutationId, fingerprint, () => (
+      this.serialized(safe, async () => {
+        const current = await this.read(safe)
+        if (current.revision !== baseRevision) {
+          throw new RevisionConflictError(current.revision)
+        }
+        const source = await this.workspace.existingFile(safe)
+        const target = await this.workspace.prepareFile(destination)
+        await this.requireMissing(target, destination)
+        await rename(source, target)
+        await Promise.all([
+          this.syncDirectory(dirname(source)),
+          dirname(target) === dirname(source)
+            ? Promise.resolve()
+            : this.syncDirectory(dirname(target)),
+        ])
+        return { ...current, canvasPath: destination, changed: true }
+      })
+    ))
+  }
+
+  async duplicate(
+    canvasPath: string,
+    newCanvasPath: string,
+    baseRevision: string,
+    mutationId: string,
+  ): Promise<CanvasWriteResult> {
+    const safe = this.workspace.validateCanvasPath(canvasPath)
+    const destination = this.workspace.validateCanvasPath(newCanvasPath)
+    if (safe === destination) throw new Error('newCanvasPath must differ from canvasPath')
+    if (!revisionPattern.test(baseRevision)) throw new Error('invalid baseRevision')
+    const fingerprint = canvasRevision(Buffer.from(
+      `duplicate\0${safe}\0${destination}\0${baseRevision}`,
+    ))
+    return this.mutations.run(mutationId, fingerprint, () => (
+      this.serialized(safe, async () => {
+        const current = await this.read(safe)
+        if (current.revision !== baseRevision) {
+          throw new RevisionConflictError(current.revision)
+        }
+        const bytes = canonicalCanvasBytes(current.document)
+        const target = await this.workspace.prepareFile(destination)
+        await this.writeNew(target, bytes)
+        return { ...current, canvasPath: destination, changed: true }
+      })
+    ))
+  }
+
+  async delete(
+    canvasPath: string,
+    confirmCanvasPath: string,
+    baseRevision: string,
+    mutationId: string,
+  ): Promise<CanvasDeleteResult> {
+    const safe = this.workspace.validateCanvasPath(canvasPath)
+    if (confirmCanvasPath !== safe) {
+      throw new Error('confirmCanvasPath must exactly match canvasPath')
+    }
+    if (!revisionPattern.test(baseRevision)) throw new Error('invalid baseRevision')
+    const fingerprint = canvasRevision(Buffer.from(`delete\0${safe}\0${baseRevision}`))
+    return this.mutations.run(mutationId, fingerprint, () => (
+      this.serialized(safe, async () => {
+        const current = await this.read(safe)
+        if (current.revision !== baseRevision) {
+          throw new RevisionConflictError(current.revision)
+        }
+        const source = await this.workspace.existingFile(safe)
+        const temporary = `${source}.${randomUUID()}.delete`
+        await rename(source, temporary)
+        try {
+          await rm(temporary)
+          await this.syncDirectory(dirname(source))
+        } catch (error) {
+          await rename(temporary, source).catch(() => undefined)
+          throw error
+        }
+        return {
+          canvasPath: safe,
+          revision: current.revision,
+          deleted: true,
+        }
+      })
+    ))
+  }
+
   private async serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(key) ?? Promise.resolve()
     let release!: () => void
     const current = new Promise<void>(resolveCurrent => {
       release = resolveCurrent
     })
-    this.queues.set(key, previous.then(() => current))
+    const queued = previous.then(() => current)
+    this.queues.set(key, queued)
     await previous
     try {
       return await action()
     } finally {
       release()
-      if (this.queues.get(key) === current) this.queues.delete(key)
+      if (this.queues.get(key) === queued) this.queues.delete(key)
     }
+  }
+
+  private async requireMissing(path: string, displayPath: string): Promise<void> {
+    try {
+      await lstat(path)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    throw new Error(`workspace path already exists: ${displayPath}`)
   }
 
   private async writeNew(target: string, bytes: Buffer): Promise<void> {

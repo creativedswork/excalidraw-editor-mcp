@@ -12,6 +12,8 @@ import { basename, dirname, join, posix, relative } from 'node:path'
 import { z } from 'zod'
 import {
   CanvasStore,
+  type CanvasDocument,
+  type CanvasSnapshot,
   MutationConflictError,
   SafeWorkspace,
   emptyCanvasDocument,
@@ -41,6 +43,11 @@ export interface ProjectSummary {
   canvasCount: number
   projectRevision: string
   canvases: CanvasSummary[]
+}
+
+export interface CanvasLifecycleResult {
+  canvas: CanvasSnapshot
+  projectRevision: string
 }
 
 export class ProjectRevisionConflictError extends Error {
@@ -129,6 +136,212 @@ export class ProjectStore {
       projectRevision,
       canvases,
     }
+  }
+
+  async listCanvases(projectPath: string): Promise<CanvasSummary[]> {
+    return (await this.inspect(projectPath)).canvases
+  }
+
+  async openCanvas(projectPath: string, canvasPath: string): Promise<CanvasSnapshot> {
+    const current = await this.inspect(projectPath)
+    const safeCanvas = this.canvasInProject(current.projectPath, canvasPath)
+    if (!current.canvases.some(canvas => canvas.canvasPath === safeCanvas)) {
+      throw new Error(`canvas does not belong to project: ${safeCanvas}`)
+    }
+    return this.canvases.read(safeCanvas)
+  }
+
+  async checkCanvas(projectPath: string, canvasPath: string): Promise<{
+    canvasPath: string
+    revision: string
+    valid: true
+    errors: []
+    warnings: []
+  }> {
+    const canvas = await this.openCanvas(projectPath, canvasPath)
+    return {
+      canvasPath: canvas.canvasPath,
+      revision: canvas.revision,
+      valid: true,
+      errors: [],
+      warnings: [],
+    }
+  }
+
+  async createCanvas(input: {
+    projectPath: string
+    canvasPath: string
+    baseProjectRevision: string
+    mutationId: string
+    document?: CanvasDocument
+  }): Promise<CanvasLifecycleResult> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'createCanvas',
+      ...input,
+      projectPath,
+      canvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const current = await this.inspect(projectPath)
+      this.requireProjectRevision(current, input.baseProjectRevision)
+      const canvas = await this.canvases.create(
+        canvasPath,
+        `canvas:${input.mutationId}`,
+        input.document,
+      )
+      return {
+        canvas,
+        projectRevision: (await this.inspect(projectPath)).projectRevision,
+      }
+    }))
+  }
+
+  async renameCanvas(input: {
+    projectPath: string
+    canvasPath: string
+    newCanvasPath: string
+    baseRevision: string
+    mutationId: string
+  }): Promise<CanvasLifecycleResult> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const newCanvasPath = this.canvasInProject(projectPath, input.newCanvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'renameCanvas',
+      ...input,
+      projectPath,
+      canvasPath,
+      newCanvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const current = await this.inspect(projectPath)
+      if (current.kind !== 'managed') {
+        throw new Error('canvas rename is only available for managed projects')
+      }
+      this.requireCanvas(current, canvasPath)
+      const canvas = await this.canvases.rename(
+        canvasPath,
+        newCanvasPath,
+        input.baseRevision,
+        `canvas:${input.mutationId}`,
+      )
+      if (current.defaultCanvasPath === canvasPath) {
+        try {
+          await this.writeManifest(projectPath, {
+            schemaVersion: 1,
+            name: current.name,
+            defaultCanvasPath: posix.relative(projectPath, newCanvasPath),
+          })
+        } catch (error) {
+          await this.canvases.rename(
+            newCanvasPath,
+            canvasPath,
+            canvas.revision,
+            `rollback:${input.mutationId}`,
+          ).catch(() => undefined)
+          throw error
+        }
+      }
+      return {
+        canvas,
+        projectRevision: (await this.inspect(projectPath)).projectRevision,
+      }
+    }))
+  }
+
+  async duplicateCanvas(input: {
+    projectPath: string
+    canvasPath: string
+    newCanvasPath: string
+    baseRevision: string
+    mutationId: string
+  }): Promise<CanvasLifecycleResult> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const newCanvasPath = this.canvasInProject(projectPath, input.newCanvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'duplicateCanvas',
+      ...input,
+      projectPath,
+      canvasPath,
+      newCanvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const current = await this.inspect(projectPath)
+      this.requireCanvas(current, canvasPath)
+      const canvas = await this.canvases.duplicate(
+        canvasPath,
+        newCanvasPath,
+        input.baseRevision,
+        `canvas:${input.mutationId}`,
+      )
+      return {
+        canvas,
+        projectRevision: (await this.inspect(projectPath)).projectRevision,
+      }
+    }))
+  }
+
+  async deleteCanvas(input: {
+    projectPath: string
+    canvasPath: string
+    confirmCanvasPath: string
+    baseRevision: string
+    mutationId: string
+  }): Promise<{
+    canvasPath: string
+    deleted: true
+    projectRevision: string
+  }> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    if (input.confirmCanvasPath !== canvasPath) {
+      throw new Error('confirmCanvasPath must exactly match canvasPath')
+    }
+    const fingerprint = digest(JSON.stringify({
+      operation: 'deleteCanvas',
+      ...input,
+      projectPath,
+      canvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const current = await this.inspect(projectPath)
+      this.requireCanvas(current, canvasPath)
+      if (current.canvases.length === 1) {
+        throw new Error('cannot delete the last canvas in a project')
+      }
+      const snapshot = await this.canvases.read(canvasPath)
+      await this.canvases.delete(
+        canvasPath,
+        canvasPath,
+        input.baseRevision,
+        `canvas:${input.mutationId}`,
+      )
+      if (current.kind === 'managed' && current.defaultCanvasPath === canvasPath) {
+        const nextDefault = current.canvases.find(canvas => canvas.canvasPath !== canvasPath)!
+        try {
+          await this.writeManifest(projectPath, {
+            schemaVersion: 1,
+            name: current.name,
+            defaultCanvasPath: posix.relative(projectPath, nextDefault.canvasPath),
+          })
+        } catch (error) {
+          await this.canvases.create(
+            canvasPath,
+            `rollback:${input.mutationId}`,
+            snapshot.document,
+          ).catch(() => undefined)
+          throw error
+        }
+      }
+      return {
+        canvasPath,
+        deleted: true,
+        projectRevision: (await this.inspect(projectPath)).projectRevision,
+      }
+    }))
   }
 
   async create(input: {
@@ -293,6 +506,27 @@ export class ProjectStore {
     return current
   }
 
+  private requireProjectRevision(current: ProjectSummary, expected: string): void {
+    if (current.projectRevision !== expected) {
+      throw new ProjectRevisionConflictError(current.projectRevision)
+    }
+  }
+
+  private requireCanvas(current: ProjectSummary, canvasPath: string): void {
+    if (!current.canvases.some(canvas => canvas.canvasPath === canvasPath)) {
+      throw new Error(`canvas does not belong to project: ${canvasPath}`)
+    }
+  }
+
+  private canvasInProject(projectPath: string, canvasPath: string): string {
+    const safeCanvas = this.workspace.validateCanvasPath(canvasPath)
+    const child = posix.relative(projectPath, safeCanvas)
+    if (child === '' || child === '..' || child.startsWith('../')) {
+      throw new Error(`canvas path must be inside projectPath: ${canvasPath}`)
+    }
+    return safeCanvas
+  }
+
   private async readManifest(projectPath: string): Promise<ProjectManifest | null> {
     const path = projectFile(projectPath, PROJECT_MANIFEST)
     try {
@@ -303,6 +537,15 @@ export class ProjectStore {
       if (errorCode(error) === 'ENOENT') return null
       throw error
     }
+  }
+
+  private async writeManifest(projectPath: string, manifest: ProjectManifest): Promise<void> {
+    const parsed = projectManifestSchema.parse(manifest)
+    this.workspace.validateCanvasPath(parsed.defaultCanvasPath)
+    await this.replaceFile(
+      await this.workspace.existingFile(projectFile(projectPath, PROJECT_MANIFEST)),
+      `${JSON.stringify(parsed, null, 2)}\n`,
+    )
   }
 
   private resolveCanvasPath(projectPath: string, canvasPath: string): string {
