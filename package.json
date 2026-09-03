@@ -19,7 +19,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
     "build": "pnpm run clean && tsdown",
-    "test": "pnpm run build && node --test tests/m0.test.mjs"
+    "test": "pnpm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.0",

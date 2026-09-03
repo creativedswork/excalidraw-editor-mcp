@@ -18,7 +18,7 @@ test('official Excalidraw conversion, restore, and serialization round trip', as
   assert.equal(result.document.elements.length, 2)
 })
 
-test('stdio server exposes the spike tool and bundled MCP App resource', async () => {
+test('stdio server exposes M1 tools and the bundled MCP App resource', async () => {
   const client = new Client({
     name: 'excalidraw-editor-m0-test',
     version: '0.0.0',
@@ -30,18 +30,19 @@ test('stdio server exposes the spike tool and bundled MCP App resource', async (
 
   try {
     const listed = await client.listTools()
-    assert.deepEqual(listed.tools.map(tool => tool.name), ['show_canvas_spike'])
-    assert.deepEqual(listed.tools[0]._meta?.ui, {
-      resourceUri: 'ui://excalidraw-editor/app',
-      visibility: ['model'],
-    })
-
-    const shown = await client.callTool({
-      name: 'show_canvas_spike',
-      arguments: {},
-    })
-    assert.equal(shown.isError, undefined)
-    assert.equal(shown.structuredContent?.kind, 'excalidraw-m0-spike')
+    const modelTools = listed.tools
+      .filter(tool => tool._meta?.ui?.visibility?.includes('model'))
+      .map(tool => tool.name)
+    assert.equal(modelTools.includes('create_project'), true)
+    assert.equal(modelTools.includes('open_canvas'), true)
+    assert.equal(modelTools.includes('pull_canvas'), false)
+    assert.deepEqual(
+      listed.tools.find(tool => tool.name === 'create_project')._meta?.ui,
+      {
+        resourceUri: 'ui://excalidraw-editor/app',
+        visibility: ['model'],
+      },
+    )
 
     const resource = await client.readResource({
       uri: 'ui://excalidraw-editor/app',
