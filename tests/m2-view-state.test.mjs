@@ -40,6 +40,21 @@ test('content summary ignores selection and viewport changes', async () => {
   assert.equal(canvasContentSummary(transient), canvasContentSummary(initial))
 })
 
+test('content summary treats omitted appState as official defaults', async () => {
+  const { canvasContentSummary } = await import(stateUrl.href)
+  const initial = document({ appState: {} })
+  const restored = document({
+    appState: {
+      gridSize: 20,
+      gridStep: 5,
+      gridModeEnabled: false,
+      viewBackgroundColor: '#ffffff',
+    },
+  })
+
+  assert.equal(canvasContentSummary(initial), canvasContentSummary(restored))
+})
+
 test('content summary detects persistent canvas changes', async () => {
   const { canvasContentSummary } = await import(stateUrl.href)
   const initial = document()
@@ -117,4 +132,82 @@ test('external scene state preserves viewport and surviving selection', async ()
   assert.equal(next.scrollY, -40)
   assert.deepEqual(next.zoom, { value: 1.75 })
   assert.equal(next.viewBackgroundColor, '#eeeeee')
+})
+
+test('initialData hydration establishes a clean canonical baseline', async () => {
+  const { reconcileCanvasChange } = await import(stateUrl.href)
+  const hydrated = reconcileCanvasChange(
+    'Loading',
+    'initial-input-summary',
+    'excalidraw-canonical-summary',
+  )
+
+  assert.deepEqual(hydrated, {
+    state: 'Loading',
+    baseSummary: 'excalidraw-canonical-summary',
+  })
+  assert.deepEqual(
+    reconcileCanvasChange(
+      'Clean',
+      hydrated.baseSummary,
+      'human-edit-summary',
+    ),
+    {
+      state: 'Dirty',
+      baseSummary: 'excalidraw-canonical-summary',
+    },
+  )
+})
+
+test('external scene apply accepts every callback behind the Loading barrier', async () => {
+  const { reconcileCanvasChange } = await import(stateUrl.href)
+  const first = reconcileCanvasChange(
+    'Loading',
+    'remote-input-summary',
+    'excalidraw-canonical-summary-1',
+  )
+  const second = reconcileCanvasChange(
+    first.state,
+    first.baseSummary,
+    'excalidraw-canonical-summary-2',
+  )
+
+  assert.deepEqual(second, {
+    state: 'Loading',
+    baseSummary: 'excalidraw-canonical-summary-2',
+  })
+  assert.deepEqual(
+    reconcileCanvasChange('Clean', second.baseSummary, second.baseSummary),
+    {
+      state: 'Clean',
+      baseSummary: 'excalidraw-canonical-summary-2',
+    },
+  )
+})
+
+test('conflict copy path stays beside the bound canvas', async () => {
+  const { conflictCopyPath } = await import(stateUrl.href)
+
+  assert.equal(
+    conflictCopyPath('designs/demo/main.excalidraw', 1234),
+    'designs/demo/main-copy-1234.excalidraw',
+  )
+})
+
+test('saved model context is bounded and excludes scene contents', async () => {
+  const { savedCanvasModelContext } = await import(stateUrl.href)
+  const selection = Array.from({ length: 30 }, (_, index) => `element-${String(index)}`)
+  const context = savedCanvasModelContext(
+    'designs/demo/main.excalidraw',
+    'a'.repeat(64),
+    selection,
+  )
+
+  assert.equal(context.structuredContent.canvasPath, 'designs/demo/main.excalidraw')
+  assert.equal(context.structuredContent.projectPath, 'designs/demo')
+  assert.equal(context.structuredContent.revision, 'a'.repeat(64))
+  assert.equal(context.structuredContent.state, 'saved')
+  assert.equal(context.structuredContent.selection.length, 20)
+  assert.equal(context.content[0].text.includes('"elements"'), false)
+  assert.ok(context.content[0].text.length < 2_000)
 })

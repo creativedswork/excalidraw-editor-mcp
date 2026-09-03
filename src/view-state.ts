@@ -14,12 +14,12 @@ export type EditorAction =
   | 'save-copy'
   | 'copy-saved'
 
-const PERSISTED_APP_STATE_KEYS = [
-  'gridSize',
-  'gridStep',
-  'gridModeEnabled',
-  'viewBackgroundColor',
-] as const
+const PERSISTED_APP_STATE_DEFAULTS = {
+  gridSize: 20,
+  gridStep: 5,
+  gridModeEnabled: false,
+  viewBackgroundColor: '#ffffff',
+} as const
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue)
@@ -38,9 +38,12 @@ export function canvasContentSummary(document: {
   appState: Record<string, unknown>
   files: Record<string, unknown>
 }): string {
-  const appState = Object.fromEntries(PERSISTED_APP_STATE_KEYS.flatMap(key => (
-    document.appState[key] === undefined ? [] : [[key, document.appState[key]]]
-  )))
+  const appState = Object.fromEntries(
+    Object.entries(PERSISTED_APP_STATE_DEFAULTS).map(([key, fallback]) => [
+      key,
+      document.appState[key] ?? fallback,
+    ]),
+  )
   return JSON.stringify(stableValue({
     elements: document.elements,
     appState,
@@ -55,6 +58,20 @@ export function editorStateAfterChange(
 ): EditorSyncState {
   if (state === 'Loading' || state === 'Saving' || state === 'Conflict') return state
   return currentSummary === baseSummary ? 'Clean' : 'Dirty'
+}
+
+export function reconcileCanvasChange(
+  state: EditorSyncState,
+  baseSummary: string,
+  currentSummary: string,
+): { state: EditorSyncState; baseSummary: string } {
+  if (state === 'Loading') {
+    return { state, baseSummary: currentSummary }
+  }
+  return {
+    state: editorStateAfterChange(state, baseSummary, currentSummary),
+    baseSummary,
+  }
 }
 
 export function editorStateAfterAction(
@@ -96,5 +113,42 @@ export function appStateForExternalUpdate(
     ...(current.scrollX === undefined ? {} : { scrollX: current.scrollX }),
     ...(current.scrollY === undefined ? {} : { scrollY: current.scrollY }),
     ...(current.zoom === undefined ? {} : { zoom: current.zoom }),
+  }
+}
+
+export function conflictCopyPath(canvasPath: string, timestamp = Date.now()): string {
+  return canvasPath.replace(
+    /\.excalidraw$/,
+    `-copy-${String(timestamp)}.excalidraw`,
+  )
+}
+
+export function savedCanvasModelContext(
+  canvasPath: string,
+  revision: string,
+  selectedIds: readonly string[],
+) {
+  const separator = canvasPath.lastIndexOf('/')
+  const projectPath = separator < 0 ? '.' : canvasPath.slice(0, separator)
+  const selection = selectedIds.slice(0, 20).map(id => id.slice(0, 128))
+  const structuredContent = {
+    canvasPath: canvasPath.slice(0, 512),
+    projectPath,
+    revision,
+    selection,
+    state: 'saved',
+  }
+  return {
+    content: [{
+      type: 'text' as const,
+      text: [
+        `Canvas: ${structuredContent.canvasPath}`,
+        `Project: ${structuredContent.projectPath}`,
+        `Revision: ${revision}`,
+        `Selection: ${selection.length === 0 ? '(none)' : selection.join(', ')}`,
+        'State: saved',
+      ].join('\n'),
+    }],
+    structuredContent,
   }
 }

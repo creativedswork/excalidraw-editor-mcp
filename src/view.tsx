@@ -22,9 +22,11 @@ import { createRoot } from 'react-dom/client'
 import {
   appStateForExternalUpdate,
   canvasContentSummary,
+  conflictCopyPath,
   editorStateAfterAction,
-  editorStateAfterChange,
   externalUpdateAction,
+  reconcileCanvasChange,
+  savedCanvasModelContext,
   type EditorSyncState,
 } from './view-state.js'
 
@@ -37,6 +39,10 @@ declare global {
       displayMode: () => string
       syncState: () => EditorSyncState
       draftSummary: () => string | undefined
+      revision: () => string | undefined
+      instanceId: () => string
+      viewport: () => { scrollX: number; scrollY: number; zoom: number }
+      modelContextRevision: () => string | undefined
     }
   }
 }
@@ -46,7 +52,7 @@ window.EXCALIDRAW_ASSET_PATH =
 
 const app = new App(
   { name: 'Excalidraw Editor M0', version: '0.0.0' },
-  {},
+  { availableDisplayModes: ['inline', 'fullscreen'] },
   { strict: true },
 )
 const POLL_INTERVAL_MS = 5_000
@@ -57,6 +63,16 @@ interface CanvasSnapshot {
   canvasPath: string
   revision: string
   document: CanvasDocument
+}
+
+function normalizedCanvasDocument(document: CanvasDocument): CanvasDocument {
+  const restored = restore(document, null, null)
+  return JSON.parse(serializeAsJSON(
+    restored.elements,
+    restored.appState,
+    restored.files ?? {},
+    'local',
+  )) as CanvasDocument
 }
 
 let pendingCanvas: CanvasSnapshot | undefined
@@ -167,6 +183,10 @@ function Canvas(): React.JSX.Element {
   const baseSummary = useRef('')
   const baseRevision = useRef('')
   const draft = useRef<CanvasDocument>()
+  const apiRef = useRef<ExcalidrawImperativeAPI>()
+  const settleFrame = useRef<number>()
+  const instanceId = useRef(crypto.randomUUID())
+  const modelContextRevision = useRef<string>()
   const setEditorState = (
     next: EditorSyncState | ((current: EditorSyncState) => EditorSyncState),
   ): void => {
@@ -174,9 +194,42 @@ function Canvas(): React.JSX.Element {
     syncStateRef.current = value
     setSyncState(value)
   }
+  const scheduleProgrammaticSettled = (): void => {
+    if (settleFrame.current !== undefined) {
+      window.cancelAnimationFrame(settleFrame.current)
+    }
+    settleFrame.current = window.requestAnimationFrame(() => {
+      settleFrame.current = undefined
+      if (syncStateRef.current !== 'Loading') return
+      const currentApi = apiRef.current
+      if (currentApi === undefined) {
+        scheduleProgrammaticSettled()
+        return
+      }
+      const document = JSON.parse(serializeAsJSON(
+        currentApi.getSceneElements(),
+        currentApi.getAppState(),
+        currentApi.getFiles(),
+        'local',
+      )) as CanvasDocument
+      baseSummary.current = canvasContentSummary(document)
+      draft.current = document
+      setEditorState('Clean')
+    })
+  }
+  const beginProgrammaticChange = (): void => {
+    if (settleFrame.current !== undefined) {
+      window.cancelAnimationFrame(settleFrame.current)
+      settleFrame.current = undefined
+    }
+    setEditorState('Loading')
+  }
 
   useEffect(() => {
-    renderCanvas = setCanvas
+    renderCanvas = snapshot => {
+      beginProgrammaticChange()
+      setCanvas(snapshot)
+    }
     if (pendingCanvas !== undefined) setCanvas(pendingCanvas)
     return () => {
       renderCanvas = undefined
@@ -185,12 +238,19 @@ function Canvas(): React.JSX.Element {
 
   useEffect(() => {
     if (canvas === undefined) return
-    baseSummary.current = canvasContentSummary(canvas.document)
+    const document = normalizedCanvasDocument(canvas.document)
+    baseSummary.current = canvasContentSummary(document)
+    draft.current = document
     baseRevision.current = canvas.revision
-    draft.current = canvas.document
     setRevision(canvas.revision)
-    setEditorState('Clean')
+    scheduleProgrammaticSettled()
   }, [canvas])
+
+  useEffect(() => () => {
+    if (settleFrame.current !== undefined) {
+      window.cancelAnimationFrame(settleFrame.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (api === undefined) return
@@ -202,11 +262,22 @@ function Canvas(): React.JSX.Element {
       draftSummary: () => draft.current === undefined
         ? undefined
         : canvasContentSummary(draft.current),
+      revision: () => revision,
+      instanceId: () => instanceId.current,
+      viewport: () => {
+        const appState = api.getAppState()
+        return {
+          scrollX: appState.scrollX,
+          scrollY: appState.scrollY,
+          zoom: appState.zoom.value,
+        }
+      },
+      modelContextRevision: () => modelContextRevision.current,
     }
     return () => {
       delete window.__EXCALIDRAW_M0__
     }
-  }, [api, displayMode, syncState])
+  }, [api, displayMode, revision, syncState])
 
   const onChange = (
     elements: readonly ExcalidrawElement[],
@@ -218,12 +289,17 @@ function Canvas(): React.JSX.Element {
       serializeAsJSON(elements, appState, files, 'local'),
     ) as CanvasDocument
     const summary = canvasContentSummary(document)
-    draft.current = document
-    setEditorState(current => editorStateAfterChange(
-      current,
+    const reconciled = reconcileCanvasChange(
+      syncStateRef.current,
       baseSummary.current,
       summary,
-    ))
+    )
+    if (reconciled.state === 'Loading') {
+      scheduleProgrammaticSettled()
+    }
+    baseSummary.current = reconciled.baseSummary
+    draft.current = document
+    setEditorState(reconciled.state)
   }
 
   const applySnapshot = (
@@ -239,17 +315,21 @@ function Canvas(): React.JSX.Element {
           restored.elements,
         ) as Partial<AppState>
       : restored.appState
-    baseSummary.current = canvasContentSummary(snapshot.document)
+    const document = normalizedCanvasDocument(snapshot.document)
+    beginProgrammaticChange()
+    baseSummary.current = canvasContentSummary(document)
     baseRevision.current = snapshot.revision
-    draft.current = snapshot.document
-    api?.updateScene({
-      elements: restored.elements,
-      appState,
-      captureUpdate: CaptureUpdateAction.NEVER,
-    })
+    draft.current = document
+    if (api !== undefined) {
+      api.updateScene({
+        elements: restored.elements,
+        appState,
+        captureUpdate: CaptureUpdateAction.NEVER,
+      })
+    }
     if (restored.files !== undefined) api?.addFiles(Object.values(restored.files))
     setRevision(snapshot.revision)
-    setEditorState('Clean')
+    scheduleProgrammaticSettled()
     setStatus('Ready')
   }
 
@@ -283,6 +363,26 @@ function Canvas(): React.JSX.Element {
     return () => window.clearInterval(timer)
   }, [api, canvas?.canvasPath])
 
+  const publishSavedContext = async (
+    canvasPath: string,
+    savedRevision: string,
+  ): Promise<void> => {
+    if (app.getHostCapabilities()?.updateModelContext === undefined) return
+    const selectedIds = api === undefined
+      ? []
+      : Object.keys(api.getAppState().selectedElementIds)
+    try {
+      await app.updateModelContext(
+        savedCanvasModelContext(canvasPath, savedRevision, selectedIds),
+      )
+      modelContextRevision.current = savedRevision
+    } catch (error) {
+      setStatus(`Saved; context unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`)
+    }
+  }
+
   const save = async (): Promise<void> => {
     if (canvas === undefined || draft.current === undefined || syncState !== 'Dirty') return
     setEditorState(current => editorStateAfterAction(current, 'save'))
@@ -309,6 +409,7 @@ function Canvas(): React.JSX.Element {
     setRevision(snapshot.revision)
     setEditorState(current => editorStateAfterAction(current, 'saved'))
     setStatus('Saved')
+    await publishSavedContext(snapshot.canvasPath, snapshot.revision)
   }
 
   const reload = async (): Promise<void> => {
@@ -329,12 +430,7 @@ function Canvas(): React.JSX.Element {
 
   const saveCopy = async (): Promise<void> => {
     if (canvas === undefined || draft.current === undefined || syncState !== 'Conflict') return
-    const suggested = canvas.canvasPath.replace(
-      /\.excalidraw$/,
-      `-copy-${String(Date.now())}.excalidraw`,
-    )
-    const newCanvasPath = window.prompt('Save conflict draft as', suggested)?.trim()
-    if (newCanvasPath === undefined || newCanvasPath === '') return
+    const newCanvasPath = conflictCopyPath(canvas.canvasPath)
     setEditorState(current => editorStateAfterAction(current, 'save-copy'))
     setStatus('Saving canvas copy')
     const saved = await app.callServerTool({
@@ -362,9 +458,10 @@ function Canvas(): React.JSX.Element {
       revision: nested.revision,
       document: draft.current,
     }
+    beginProgrammaticChange()
     setCanvas(snapshot)
-    setEditorState(current => editorStateAfterAction(current, 'copy-saved'))
     setStatus('Copy saved')
+    await publishSavedContext(snapshot.canvasPath, snapshot.revision)
   }
 
   const download = async (format: 'json' | 'svg' | 'png'): Promise<void> => {
@@ -470,7 +567,10 @@ function Canvas(): React.JSX.Element {
       <div className="m0-canvas">
         <Excalidraw
           key={canvas?.canvasPath ?? 'm0-seed'}
-          excalidrawAPI={setApi}
+          excalidrawAPI={(value: ExcalidrawImperativeAPI) => {
+            apiRef.current = value
+            setApi(value)
+          }}
           initialData={initialData}
           langCode="en"
           name="Excalidraw M0"
