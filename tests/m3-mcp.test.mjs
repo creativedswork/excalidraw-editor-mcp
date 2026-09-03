@@ -294,3 +294,228 @@ test('apply_canvas_changes is atomic, idempotent, and uses official element inva
   assert.equal(stale.isError, true)
   assert.match(stale.content[0].text, /revision conflict/)
 })
+
+test('relationship operations preserve ordering and repair removed references', async (t) => {
+  const state = await fixture(t)
+  const seeded = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: state.revision,
+      mutationId: 'relations-seed',
+      changes: [
+        {
+          op: 'add',
+          clientRef: 'frame',
+          element: {
+            type: 'frame',
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 300,
+            children: [],
+            name: 'Flow',
+          },
+        },
+        {
+          op: 'add',
+          clientRef: 'a',
+          element: { type: 'rectangle', x: 40, y: 60, width: 140, height: 80 },
+        },
+        {
+          op: 'add',
+          clientRef: 'b',
+          element: { type: 'ellipse', x: 360, y: 60, width: 140, height: 80 },
+        },
+        {
+          op: 'add',
+          clientRef: 'arrow',
+          element: { type: 'arrow', x: 180, y: 100, points: [[0, 0], [180, 0]] },
+        },
+        {
+          op: 'add',
+          clientRef: 'label',
+          element: { type: 'text', x: 70, y: 90, text: 'A' },
+        },
+      ],
+    },
+    _meta: state.meta,
+  })
+  assert.equal(seeded.isError, undefined, seeded.content[0]?.text)
+  const ids = seeded.structuredContent.clientRefMap
+
+  const related = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: seeded.structuredContent.revision,
+      mutationId: 'relations-bind',
+      changes: [
+        {
+          op: 'group',
+          targets: [{ elementId: ids.a }, { elementId: ids.b }],
+        },
+        {
+          op: 'bind',
+          source: { elementId: ids.arrow },
+          target: { elementId: ids.a },
+          binding: 'start',
+        },
+        {
+          op: 'bind',
+          source: { elementId: ids.arrow },
+          target: { elementId: ids.b },
+          binding: 'end',
+        },
+        {
+          op: 'bind',
+          source: { elementId: ids.label },
+          target: { elementId: ids.a },
+          binding: 'label',
+        },
+        {
+          op: 'add_to_frame',
+          targets: [
+            { elementId: ids.a },
+            { elementId: ids.b },
+            { elementId: ids.arrow },
+            { elementId: ids.label },
+          ],
+          frame: { elementId: ids.frame },
+        },
+        {
+          op: 'reorder',
+          target: { elementId: ids.b },
+          position: 'front',
+        },
+      ],
+    },
+    _meta: state.meta,
+  })
+  assert.equal(related.isError, undefined, related.content[0]?.text)
+
+  const inspect = async revision => {
+    const response = await state.client.callTool({
+      name: 'inspect_canvas',
+      arguments: {
+        projectPath: 'designs/m3',
+        canvasPath: state.canvasPath,
+        includeDocument: true,
+        limit: 100,
+      },
+      _meta: state.meta,
+    })
+    assert.equal(response.isError, undefined, response.content[0]?.text)
+    assert.equal(response.structuredContent.revision, revision)
+    return response.structuredContent.document.elements
+  }
+  let elements = await inspect(related.structuredContent.revision)
+  const element = id => elements.find(candidate => candidate.id === id)
+  assert.equal(element(ids.b).id, elements.filter(item => !item.isDeleted).at(-1).id)
+  assert.equal(element(ids.a).groupIds[0], element(ids.b).groupIds[0])
+  assert.equal(element(ids.arrow).startBinding.elementId, ids.a)
+  assert.equal(element(ids.arrow).endBinding.elementId, ids.b)
+  assert.ok(element(ids.a).boundElements.some(item => item.id === ids.arrow))
+  assert.ok(element(ids.a).boundElements.some(item => item.id === ids.label))
+  assert.equal(element(ids.label).containerId, ids.a)
+  assert.equal(element(ids.arrow).frameId, ids.frame)
+
+  const detached = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: related.structuredContent.revision,
+      mutationId: 'relations-detach',
+      changes: [
+        {
+          op: 'ungroup',
+          targets: [{ elementId: ids.a }, { elementId: ids.b }],
+        },
+        {
+          op: 'unbind',
+          source: { elementId: ids.arrow },
+          binding: 'start',
+        },
+        {
+          op: 'unbind',
+          source: { elementId: ids.arrow },
+          binding: 'end',
+        },
+        {
+          op: 'unbind',
+          source: { elementId: ids.label },
+          binding: 'label',
+        },
+        {
+          op: 'remove_from_frame',
+          targets: [{ elementId: ids.a }, { elementId: ids.b }],
+        },
+        {
+          op: 'reorder',
+          target: { elementId: ids.b },
+          position: 'before',
+          relativeTo: { elementId: ids.arrow },
+        },
+      ],
+    },
+    _meta: state.meta,
+  })
+  assert.equal(detached.isError, undefined, detached.content[0]?.text)
+  elements = await inspect(detached.structuredContent.revision)
+  assert.deepEqual(element(ids.a).groupIds, [])
+  assert.deepEqual(element(ids.b).groupIds, [])
+  assert.equal(element(ids.arrow).startBinding, null)
+  assert.equal(element(ids.arrow).endBinding, null)
+  assert.equal(element(ids.label).containerId, null)
+  assert.equal(element(ids.a).frameId, null)
+  assert.ok(elements.indexOf(element(ids.b)) < elements.indexOf(element(ids.arrow)))
+
+  const removed = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: state.canvasPath,
+      baseRevision: detached.structuredContent.revision,
+      mutationId: 'relations-remove',
+      changes: [
+        {
+          op: 'bind',
+          source: { elementId: ids.arrow },
+          target: { elementId: ids.a },
+          binding: 'start',
+        },
+        {
+          op: 'bind',
+          source: { elementId: ids.label },
+          target: { elementId: ids.a },
+          binding: 'label',
+        },
+        {
+          op: 'add_to_frame',
+          targets: [{ elementId: ids.arrow }],
+          frame: { elementId: ids.frame },
+        },
+        { op: 'remove', target: { elementId: ids.a } },
+        { op: 'remove', target: { elementId: ids.frame } },
+      ],
+    },
+    _meta: state.meta,
+  })
+  assert.equal(removed.isError, undefined, removed.content[0]?.text)
+  elements = await inspect(removed.structuredContent.revision)
+  assert.equal(element(ids.a), undefined)
+  assert.equal(element(ids.label), undefined)
+  assert.equal(element(ids.arrow).startBinding, null)
+  assert.equal(element(ids.arrow).frameId, null)
+  assert.ok(element(ids.b).boundElements === null
+    || element(ids.b).boundElements.every(item => !element(item.id)?.isDeleted))
+
+  const active = elements.filter(item => !item.isDeleted)
+  assert.equal(new Set(active.map(item => item.index)).size, active.length)
+  assert.ok(active.every((item, index) => (
+    index === 0 || active[index - 1].index < item.index
+  )))
+})

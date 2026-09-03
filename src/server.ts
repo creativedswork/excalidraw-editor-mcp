@@ -157,6 +157,42 @@ const canvasChangeSchema = z.discriminatedUnion('op', [
     target: elementReferenceSchema,
   }).strict(),
   z.object({
+    op: z.literal('reorder'),
+    target: elementReferenceSchema,
+    position: z.enum(['front', 'back', 'before', 'after']),
+    relativeTo: elementReferenceSchema.optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('group'),
+    targets: z.array(elementReferenceSchema).min(2).max(100),
+    groupId: z.string().min(1).max(128).optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('ungroup'),
+    targets: z.array(elementReferenceSchema).min(2).max(100),
+    groupId: z.string().min(1).max(128).optional(),
+  }).strict(),
+  z.object({
+    op: z.literal('bind'),
+    source: elementReferenceSchema,
+    target: elementReferenceSchema,
+    binding: z.enum(['start', 'end', 'label']),
+  }).strict(),
+  z.object({
+    op: z.literal('unbind'),
+    source: elementReferenceSchema,
+    binding: z.enum(['start', 'end', 'label']),
+  }).strict(),
+  z.object({
+    op: z.literal('add_to_frame'),
+    targets: z.array(elementReferenceSchema).min(1).max(1_000),
+    frame: elementReferenceSchema,
+  }).strict(),
+  z.object({
+    op: z.literal('remove_from_frame'),
+    targets: z.array(elementReferenceSchema).min(1).max(1_000),
+  }).strict(),
+  z.object({
     op: z.literal('set_canvas'),
     patch: z.object({
       viewBackgroundColor: z.string().max(100).optional(),
