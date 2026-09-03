@@ -47,6 +47,10 @@ export default defineConfig([
     dts: false,
     clean: false,
     fixedExtension: false,
+    deps: {
+      alwaysBundle: () => true,
+      onlyBundle: false,
+    },
     outputOptions: {
       entryFileNames: '[name].js',
     },

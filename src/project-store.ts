@@ -15,9 +15,11 @@ import {
   type CanvasDocument,
   type CanvasSnapshot,
   MutationConflictError,
+  RevisionConflictError,
   SafeWorkspace,
   emptyCanvasDocument,
 } from './canvas-store.js'
+import type { CanvasChange } from './official.js'
 
 export const PROJECT_MANIFEST = '.excalidraw-project.json'
 
@@ -166,6 +168,56 @@ export class ProjectStore {
       errors: [],
       warnings: [],
     }
+  }
+
+  async applyCanvasChanges(input: {
+    projectPath: string
+    canvasPath: string
+    baseRevision: string
+    mutationId: string
+    changes: CanvasChange[]
+  }): Promise<{
+    canvasPath: string
+    revision: string
+    changed: boolean
+    clientRefMap: Record<string, string>
+    affectedElementIds: string[]
+    summary: { changeCount: number }
+    warnings: string[]
+  }> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'applyCanvasChanges',
+      ...input,
+      projectPath,
+      canvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const project = await this.inspect(projectPath)
+      this.requireCanvas(project, canvasPath)
+      const current = await this.canvases.read(canvasPath)
+      if (current.revision !== input.baseRevision) {
+        throw new RevisionConflictError(current.revision)
+      }
+      const { applyOfficialCanvasChanges } = await import('./official.js')
+      const transformed = applyOfficialCanvasChanges(current.document, input.changes)
+      const canvas = await this.canvases.write(
+        canvasPath,
+        input.baseRevision,
+        `canvas-change:${input.mutationId}`,
+        transformed.document,
+      )
+      return {
+        canvasPath,
+        revision: canvas.revision,
+        changed: canvas.changed,
+        clientRefMap: transformed.clientRefMap,
+        affectedElementIds: transformed.affectedElementIds,
+        summary: { changeCount: input.changes.length },
+        warnings: transformed.warnings,
+      }
+    }))
   }
 
   async createCanvas(input: {

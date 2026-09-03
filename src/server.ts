@@ -32,6 +32,7 @@ import {
   type CanvasSummary,
   type ProjectSummary,
 } from './project-store.js'
+import type { CanvasChange } from './official.js'
 
 const RESOURCE_URI = 'ui://excalidraw-editor/app'
 const DSH_WORKSPACE_META_KEY = 'ai.deepseek.dsh/workspace'
@@ -67,6 +68,104 @@ function viewHtml(script: string, css: string): string {
 const pathSchema = z.string().min(1).max(512)
 const revisionSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const mutationSchema = z.string().min(1).max(200)
+const elementReferenceSchema = z.union([
+  z.object({ elementId: z.string().min(1).max(128) }).strict(),
+  z.object({ clientRef: z.string().min(1).max(128) }).strict(),
+])
+const shorthandReferenceSchema = z.union([
+  elementReferenceSchema,
+  z.string().min(1).max(128).transform(clientRef => ({ clientRef })),
+])
+const pointSchema = z.tuple([z.number().finite(), z.number().finite()])
+const labelSchema = z.object({
+  text: z.string().max(10_000),
+  fontSize: z.number().positive().max(500).optional(),
+}).strict()
+const elementStyleSchema = {
+  strokeColor: z.string().max(100).optional(),
+  backgroundColor: z.string().max(100).optional(),
+  fillStyle: z.string().max(40).optional(),
+  strokeWidth: z.number().positive().max(20).optional(),
+  strokeStyle: z.string().max(40).optional(),
+  roughness: z.number().min(0).max(3).optional(),
+  opacity: z.number().min(0).max(100).optional(),
+  roundness: z.unknown().optional(),
+  fontSize: z.number().positive().max(500).optional(),
+  fontFamily: z.number().int().positive().optional(),
+  textAlign: z.string().max(20).optional(),
+  verticalAlign: z.string().max(20).optional(),
+  lineHeight: z.number().positive().max(10).optional(),
+  startArrowhead: z.string().max(40).nullable().optional(),
+  endArrowhead: z.string().max(40).nullable().optional(),
+  link: z.string().max(2_000).nullable().optional(),
+  locked: z.boolean().optional(),
+  customData: z.record(z.string(), z.unknown()).optional(),
+}
+const addElementSchema = z.object({
+  type: z.enum([
+    'rectangle',
+    'diamond',
+    'ellipse',
+    'text',
+    'line',
+    'arrow',
+    'freedraw',
+    'frame',
+    'image',
+  ]),
+  x: z.number().finite().optional(),
+  y: z.number().finite().optional(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  text: z.string().max(10_000).optional(),
+  label: labelSchema.optional(),
+  points: z.array(pointSchema).min(2).max(10_000).optional(),
+  pressures: z.array(z.number().min(0).max(1)).max(10_000).optional(),
+  simulatePressure: z.boolean().optional(),
+  fileId: z.string().min(1).max(128).optional(),
+  children: z.array(elementReferenceSchema).max(1_000).optional(),
+  name: z.string().max(200).optional(),
+  startRef: shorthandReferenceSchema.optional(),
+  endRef: shorthandReferenceSchema.optional(),
+  ...elementStyleSchema,
+}).strict()
+const updateElementSchema = z.object({
+  x: z.number().finite().optional(),
+  y: z.number().finite().optional(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  angle: z.number().finite().optional(),
+  text: z.string().max(10_000).optional(),
+  label: labelSchema.optional(),
+  points: z.array(pointSchema).min(2).max(10_000).optional(),
+  fileId: z.string().min(1).max(128).optional(),
+  ...elementStyleSchema,
+}).strict().refine(value => Object.keys(value).length > 0, 'update patch must not be empty')
+const canvasChangeSchema = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('add'),
+    clientRef: z.string().min(1).max(128),
+    element: addElementSchema,
+  }).strict(),
+  z.object({
+    op: z.literal('update'),
+    target: elementReferenceSchema,
+    patch: updateElementSchema,
+  }).strict(),
+  z.object({
+    op: z.literal('remove'),
+    target: elementReferenceSchema,
+  }).strict(),
+  z.object({
+    op: z.literal('set_canvas'),
+    patch: z.object({
+      viewBackgroundColor: z.string().max(100).optional(),
+      gridSize: z.number().positive().nullable().optional(),
+      gridStep: z.number().positive().optional(),
+      gridModeEnabled: z.boolean().optional(),
+    }).strict().refine(value => Object.keys(value).length > 0, 'canvas patch must not be empty'),
+  }).strict(),
+])
 const bindingSchema = z.object({
   workspaceRoot: z.string().min(1),
   projectPath: pathSchema,
@@ -410,6 +509,25 @@ function createServer(): McpServer {
   }, async ({ projectPath, canvasPath }, { _meta }) => result(
     'Checked Excalidraw canvas.',
     await (await projectStore(_meta)).checkCanvas(projectPath, canvasPath),
+  ))
+
+  registerAppTool(server, 'apply_canvas_changes', {
+    title: 'Apply Excalidraw canvas changes',
+    description: 'Atomically applies semantic element and canvas changes at one base revision.',
+    inputSchema: {
+      projectPath: pathSchema,
+      canvasPath: pathSchema,
+      baseRevision: revisionSchema,
+      mutationId: mutationSchema,
+      changes: z.array(canvasChangeSchema).min(1).max(200),
+    },
+    _meta: { ui: { visibility: ['model'] } },
+  }, async (input, { _meta }) => result(
+    'Applied Excalidraw canvas changes.',
+    await (await projectStore(_meta)).applyCanvasChanges({
+      ...input,
+      changes: input.changes as CanvasChange[],
+    }),
   ))
 
   registerAppTool(server, 'rename_canvas', {
