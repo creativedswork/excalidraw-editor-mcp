@@ -7,7 +7,8 @@ import test from 'node:test'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
-const serverPath = fileURLToPath(new URL('../dist/server.js', import.meta.url))
+const serverPath = process.env.M2_SERVER_PATH
+  ?? fileURLToPath(new URL('../dist/server.js', import.meta.url))
 const workspaceKey = 'ai.deepseek.dsh/workspace'
 const sessionKey = 'ai.deepseek.dsh/session'
 
@@ -101,4 +102,55 @@ test('app save, conflict, reload, and save-as-copy preserve drafts', async (t) =
     JSON.parse(await readFile(join(workspace, canvasPath), 'utf8')).elements[0].id,
     'saved',
   )
+})
+
+test('bound canvas survives an MCP server process restart', async (t) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'excalidraw-m2-reconnect-'))
+  const bindings = await mkdtemp(join(tmpdir(), 'excalidraw-m2-bindings-'))
+  t.after(() => Promise.all([
+    rm(workspace, { recursive: true, force: true }),
+    rm(bindings, { recursive: true, force: true }),
+  ]))
+  const sessionId = `m2-reconnect-${String(Date.now())}`
+  const meta = {
+    [workspaceKey]: { cwd: workspace },
+    [sessionKey]: { sessionId, connectionGeneration: 'first' },
+  }
+  const startClient = async () => {
+    const client = new Client({ name: 'excalidraw-m2-reconnect-test', version: '0.0.0' })
+    await client.connect(new StdioClientTransport({
+      command: process.execPath,
+      args: [serverPath],
+      env: { ...process.env, EXCALIDRAW_BINDINGS_DIR: bindings },
+    }))
+    return client
+  }
+
+  const first = await startClient()
+  const created = await first.callTool({
+    name: 'create_project',
+    arguments: {
+      projectPath: 'designs/reconnect',
+      name: 'Reconnect',
+      mutationId: 'create-reconnect',
+    },
+    _meta: meta,
+  })
+  await first.close()
+
+  const second = await startClient()
+  t.after(() => second.close())
+  const pulled = await second.callTool({
+    name: 'pull_canvas',
+    arguments: {
+      canvasPath: created.structuredContent.canvasPath,
+      currentRevision: created.structuredContent.revision,
+    },
+    _meta: {
+      [sessionKey]: { sessionId, connectionGeneration: 'second' },
+    },
+  })
+  assert.equal(pulled.isError, undefined)
+  assert.equal(pulled.structuredContent.changed, false)
+  assert.equal(pulled.structuredContent.revision, created.structuredContent.revision)
 })

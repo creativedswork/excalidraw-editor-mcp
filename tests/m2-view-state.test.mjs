@@ -89,3 +89,32 @@ test('explicit actions have lossless save and recovery transitions', async () =>
   assert.equal(editorStateAfterAction('Conflict', 'save-copy'), 'Saving')
   assert.equal(editorStateAfterAction('Saving', 'copy-saved'), 'Clean')
 })
+
+test('external updates apply only to clean drafts', async () => {
+  const { externalUpdateAction } = await import(stateUrl.href)
+
+  assert.equal(externalUpdateAction('Clean'), 'apply')
+  assert.equal(externalUpdateAction('Dirty'), 'conflict')
+  assert.equal(externalUpdateAction('Conflict'), 'conflict')
+  assert.equal(externalUpdateAction('Saving'), 'skip')
+})
+
+test('external scene state preserves viewport and surviving selection', async () => {
+  const { appStateForExternalUpdate } = await import(stateUrl.href)
+  const next = appStateForExternalUpdate(
+    { viewBackgroundColor: '#eeeeee', scrollX: 0, scrollY: 0, zoom: { value: 1 } },
+    {
+      selectedElementIds: { kept: true, removed: true },
+      scrollX: 120,
+      scrollY: -40,
+      zoom: { value: 1.75 },
+    },
+    [{ id: 'kept' }, { id: 'deleted', isDeleted: true }],
+  )
+
+  assert.deepEqual(next.selectedElementIds, { kept: true })
+  assert.equal(next.scrollX, 120)
+  assert.equal(next.scrollY, -40)
+  assert.deepEqual(next.zoom, { value: 1.75 })
+  assert.equal(next.viewBackgroundColor, '#eeeeee')
+})

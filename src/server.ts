@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 
-import { readFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import {
+  mkdir,
+  readFile,
+  rename,
+  writeFile,
+} from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   RESOURCE_MIME_TYPE,
   registerAppResource,
@@ -14,6 +22,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import {
+  SafeWorkspace,
   type CanvasDocument,
   canvasDocumentSchema,
 } from './canvas-store.js'
@@ -57,12 +66,21 @@ function viewHtml(script: string, css: string): string {
 const pathSchema = z.string().min(1).max(512)
 const revisionSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const mutationSchema = z.string().min(1).max(200)
+const bindingSchema = z.object({
+  workspaceRoot: z.string().min(1),
+  projectPath: pathSchema,
+  canvasPath: pathSchema,
+})
+const bindingsDirectory = process.env.EXCALIDRAW_BINDINGS_DIR
+  ?? join(tmpdir(), 'excalidraw-editor-mcp-bindings')
 const stores = new Map<string, Promise<ProjectStore>>()
-const bindings = new Map<string, {
+interface CanvasBinding {
   store: ProjectStore
   projectPath: string
   canvasPath: string
-}>()
+}
+
+const bindings = new Map<string, CanvasBinding>()
 
 function result(text: string, structuredContent: Record<string, unknown>): CallToolResult {
   return {
@@ -86,55 +104,87 @@ function sessionId(meta: Record<string, unknown> | undefined): string | undefine
   return parsed.success ? parsed.data.sessionId : undefined
 }
 
-async function projectStore(meta: Record<string, unknown> | undefined): Promise<ProjectStore> {
-  const cwd = workspacePath(meta)
+async function storeForWorkspace(cwd: string): Promise<ProjectStore> {
   let store = stores.get(cwd)
   if (store === undefined) {
-    store = import('./canvas-store.js')
-      .then(({ SafeWorkspace }) => SafeWorkspace.open(cwd))
+    store = SafeWorkspace.open(cwd)
       .then(workspace => new ProjectStore(workspace))
     stores.set(cwd, store)
   }
   return store
 }
 
-function bindCanvas(
+async function projectStore(meta: Record<string, unknown> | undefined): Promise<ProjectStore> {
+  return storeForWorkspace(workspacePath(meta))
+}
+
+function bindingPath(id: string): string {
+  const key = createHash('sha256').update(id).digest('hex')
+  return join(bindingsDirectory, `${key}.json`)
+}
+
+async function persistBinding(id: string, binding: CanvasBinding): Promise<void> {
+  await mkdir(bindingsDirectory, { recursive: true, mode: 0o700 })
+  const path = bindingPath(id)
+  const temporary = `${path}.${randomUUID()}.tmp`
+  await writeFile(temporary, JSON.stringify({
+    workspaceRoot: binding.store.workspace.root,
+    projectPath: binding.projectPath,
+    canvasPath: binding.canvasPath,
+  }), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+  await rename(temporary, path)
+}
+
+async function bindCanvas(
   meta: Record<string, unknown> | undefined,
   store: ProjectStore,
   projectPath: string,
   canvasPath: string,
-): void {
+): Promise<void> {
   const id = sessionId(meta)
-  if (id !== undefined) bindings.set(id, { store, projectPath, canvasPath })
+  if (id === undefined) return
+  const binding = { store, projectPath, canvasPath }
+  await persistBinding(id, binding)
+  bindings.set(id, binding)
 }
 
-function boundCanvas(
+async function boundCanvas(
   meta: Record<string, unknown> | undefined,
   canvasPath: string,
-): {
-  store: ProjectStore
-  projectPath: string
-  canvasPath: string
-} {
+): Promise<CanvasBinding> {
   const id = sessionId(meta)
-  const binding = id === undefined ? undefined : bindings.get(id)
+  let binding = id === undefined ? undefined : bindings.get(id)
+  if (binding === undefined && id !== undefined) {
+    try {
+      const stored = bindingSchema.parse(JSON.parse(
+        await readFile(bindingPath(id), 'utf8'),
+      ))
+      binding = {
+        ...stored,
+        store: await storeForWorkspace(stored.workspaceRoot),
+      }
+      bindings.set(id, binding)
+    } catch {
+      // Report the same bounded error for absent, stale, or invalid records.
+    }
+  }
   if (binding === undefined || binding.canvasPath !== canvasPath) {
     throw new Error('canvas is not bound to this app session')
   }
   return binding
 }
 
-function bindProject(
+async function bindProject(
   meta: Record<string, unknown> | undefined,
   store: ProjectStore,
   project: ProjectSummary,
-): CanvasSummary {
+): Promise<CanvasSummary> {
   if (project.defaultCanvasPath === null) throw new Error('project has no default canvas')
   const canvas = project.canvases.find(
     candidate => candidate.canvasPath === project.defaultCanvasPath,
   )
   if (canvas === undefined) throw new Error('project default canvas is unavailable')
-  bindCanvas(meta, store, project.projectPath, canvas.canvasPath)
+  await bindCanvas(meta, store, project.projectPath, canvas.canvasPath)
   return canvas
 }
 
@@ -171,7 +221,7 @@ function createServer(): McpServer {
   }, async (input, { _meta }) => {
     const store = await projectStore(_meta)
     const project = await store.create(input)
-    const canvas = bindProject(_meta, store, project)
+    const canvas = await bindProject(_meta, store, project)
     return result('Created Excalidraw project.', { project, ...canvas })
   })
 
@@ -188,7 +238,7 @@ function createServer(): McpServer {
   }, async ({ projectPath }, { _meta }) => {
     const store = await projectStore(_meta)
     const project = await store.inspect(projectPath)
-    const canvas = bindProject(_meta, store, project)
+    const canvas = await bindProject(_meta, store, project)
     return result('Opened Excalidraw project.', { project, ...canvas })
   })
 
@@ -276,7 +326,7 @@ function createServer(): McpServer {
   }, async (input, { _meta }) => {
     const store = await projectStore(_meta)
     const created = await store.createCanvas(input)
-    bindCanvas(_meta, store, input.projectPath, created.canvas.canvasPath)
+    await bindCanvas(_meta, store, input.projectPath, created.canvas.canvasPath)
     return result('Created Excalidraw canvas.', {
       ...created,
       canvasPath: created.canvas.canvasPath,
@@ -300,7 +350,7 @@ function createServer(): McpServer {
   }, async ({ projectPath, canvasPath }, { _meta }) => {
     const store = await projectStore(_meta)
     const canvas = await store.openCanvas(projectPath, canvasPath)
-    bindCanvas(_meta, store, projectPath, canvas.canvasPath)
+    await bindCanvas(_meta, store, projectPath, canvas.canvasPath)
     return result('Opened Excalidraw canvas.', {
       canvasPath: canvas.canvasPath,
       revision: canvas.revision,
@@ -397,7 +447,7 @@ function createServer(): McpServer {
     },
     _meta: { ui: { visibility: ['app'] } },
   }, async ({ canvasPath, currentRevision }, { _meta }) => {
-    const binding = boundCanvas(_meta, canvasPath)
+    const binding = await boundCanvas(_meta, canvasPath)
     const canvas = await binding.store.openCanvas(binding.projectPath, canvasPath)
     const changed = canvas.revision !== currentRevision
     return result(changed ? 'Canvas snapshot returned.' : 'Canvas is current.', {
@@ -419,7 +469,7 @@ function createServer(): McpServer {
     },
     _meta: { ui: { visibility: ['app'] } },
   }, async ({ canvasPath, baseRevision, mutationId, document }, { _meta }) => {
-    const binding = boundCanvas(_meta, canvasPath)
+    const binding = await boundCanvas(_meta, canvasPath)
     const canvas = await binding.store.canvases.write(
       canvasPath,
       baseRevision,
@@ -440,7 +490,7 @@ function createServer(): McpServer {
     },
     _meta: { ui: { visibility: ['app'] } },
   }, async ({ canvasPath, newCanvasPath, mutationId, document }, { _meta }) => {
-    const binding = boundCanvas(_meta, canvasPath)
+    const binding = await boundCanvas(_meta, canvasPath)
     const project = await binding.store.inspect(binding.projectPath)
     const created = await binding.store.createCanvas({
       projectPath: binding.projectPath,
@@ -449,7 +499,7 @@ function createServer(): McpServer {
       mutationId,
       document: document as CanvasDocument,
     })
-    bindCanvas(_meta, binding.store, binding.projectPath, created.canvas.canvasPath)
+    await bindCanvas(_meta, binding.store, binding.projectPath, created.canvas.canvasPath)
     return result('Saved Excalidraw canvas copy.', { ...created })
   })
 

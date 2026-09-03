@@ -69,3 +69,32 @@ export function editorStateAfterAction(
   if (action === 'reloaded' && state === 'Loading') return 'Clean'
   return state
 }
+
+export function externalUpdateAction(
+  state: EditorSyncState,
+): 'apply' | 'conflict' | 'skip' {
+  if (state === 'Clean') return 'apply'
+  if (state === 'Dirty' || state === 'Conflict') return 'conflict'
+  return 'skip'
+}
+
+export function appStateForExternalUpdate(
+  remote: Record<string, unknown>,
+  current: Record<string, unknown>,
+  elements: readonly { id: string; isDeleted?: boolean }[],
+): Record<string, unknown> {
+  const ids = new Set(elements.filter(element => !element.isDeleted).map(element => element.id))
+  const selected = current.selectedElementIds
+  const selectedElementIds = selected !== null && typeof selected === 'object'
+    ? Object.fromEntries(
+        Object.entries(selected).filter(([id, value]) => ids.has(id) && value === true),
+      )
+    : {}
+  return {
+    ...remote,
+    selectedElementIds,
+    ...(current.scrollX === undefined ? {} : { scrollX: current.scrollX }),
+    ...(current.scrollY === undefined ? {} : { scrollY: current.scrollY }),
+    ...(current.zoom === undefined ? {} : { zoom: current.zoom }),
+  }
+}

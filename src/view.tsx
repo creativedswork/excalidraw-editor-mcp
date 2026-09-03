@@ -20,9 +20,11 @@ import './styles.css'
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
+  appStateForExternalUpdate,
   canvasContentSummary,
   editorStateAfterAction,
   editorStateAfterChange,
+  externalUpdateAction,
   type EditorSyncState,
 } from './view-state.js'
 
@@ -47,6 +49,7 @@ const app = new App(
   {},
   { strict: true },
 )
+const POLL_INTERVAL_MS = 5_000
 
 type CanvasDocument = NonNullable<Parameters<typeof restore>[0]>
 
@@ -160,9 +163,17 @@ function Canvas(): React.JSX.Element {
   const [canvas, setCanvas] = useState(pendingCanvas)
   const [revision, setRevision] = useState(canvas?.revision)
   const [syncState, setSyncState] = useState<EditorSyncState>('Loading')
+  const syncStateRef = useRef<EditorSyncState>('Loading')
   const baseSummary = useRef('')
   const baseRevision = useRef('')
   const draft = useRef<CanvasDocument>()
+  const setEditorState = (
+    next: EditorSyncState | ((current: EditorSyncState) => EditorSyncState),
+  ): void => {
+    const value = typeof next === 'function' ? next(syncStateRef.current) : next
+    syncStateRef.current = value
+    setSyncState(value)
+  }
 
   useEffect(() => {
     renderCanvas = setCanvas
@@ -178,7 +189,7 @@ function Canvas(): React.JSX.Element {
     baseRevision.current = canvas.revision
     draft.current = canvas.document
     setRevision(canvas.revision)
-    setSyncState('Clean')
+    setEditorState('Clean')
   }, [canvas])
 
   useEffect(() => {
@@ -208,32 +219,73 @@ function Canvas(): React.JSX.Element {
     ) as CanvasDocument
     const summary = canvasContentSummary(document)
     draft.current = document
-    setSyncState(current => editorStateAfterChange(
+    setEditorState(current => editorStateAfterChange(
       current,
       baseSummary.current,
       summary,
     ))
   }
 
-  const applySnapshot = (snapshot: CanvasSnapshot): void => {
+  const applySnapshot = (
+    snapshot: CanvasSnapshot,
+    preserveView = false,
+  ): void => {
     const restored = restore(snapshot.document, null, null)
-    api?.updateScene({
-      elements: restored.elements,
-      appState: restored.appState,
-      captureUpdate: CaptureUpdateAction.NEVER,
-    })
-    if (restored.files !== undefined) api?.addFiles(Object.values(restored.files))
+    const currentAppState = api?.getAppState()
+    const appState = preserveView && currentAppState !== undefined
+      ? appStateForExternalUpdate(
+          restored.appState as unknown as Record<string, unknown>,
+          currentAppState as unknown as Record<string, unknown>,
+          restored.elements,
+        ) as Partial<AppState>
+      : restored.appState
     baseSummary.current = canvasContentSummary(snapshot.document)
     baseRevision.current = snapshot.revision
     draft.current = snapshot.document
+    api?.updateScene({
+      elements: restored.elements,
+      appState,
+      captureUpdate: CaptureUpdateAction.NEVER,
+    })
+    if (restored.files !== undefined) api?.addFiles(Object.values(restored.files))
     setRevision(snapshot.revision)
-    setSyncState('Clean')
+    setEditorState('Clean')
     setStatus('Ready')
   }
 
+  useEffect(() => {
+    if (canvas === undefined || api === undefined) return
+    let polling = false
+    const timer = window.setInterval(() => {
+      if (polling || externalUpdateAction(syncStateRef.current) === 'skip') return
+      polling = true
+      void pullSnapshot(canvas.canvasPath, baseRevision.current)
+        .then(snapshot => {
+          if (snapshot === undefined) {
+            setStatus('Ready')
+            return
+          }
+          const action = externalUpdateAction(syncStateRef.current)
+          if (action === 'apply') {
+            applySnapshot(snapshot, true)
+          } else if (action === 'conflict') {
+            setEditorState('Conflict')
+            setStatus('External update detected')
+          }
+        })
+        .catch(error => {
+          setStatus(`Disconnected: ${error instanceof Error ? error.message : String(error)}`)
+        })
+        .finally(() => {
+          polling = false
+        })
+    }, POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [api, canvas?.canvasPath])
+
   const save = async (): Promise<void> => {
     if (canvas === undefined || draft.current === undefined || syncState !== 'Dirty') return
-    setSyncState(current => editorStateAfterAction(current, 'save'))
+    setEditorState(current => editorStateAfterAction(current, 'save'))
     setStatus('Saving canvas')
     const saved = await app.callServerTool({
       name: 'push_canvas',
@@ -247,7 +299,7 @@ function Canvas(): React.JSX.Element {
     if (saved.isError) {
       const message = errorMessage(saved)
       setStatus(message)
-      setSyncState(message.includes('revision conflict') ? 'Conflict' : 'Dirty')
+      setEditorState(message.includes('revision conflict') ? 'Conflict' : 'Dirty')
       return
     }
     const snapshot = snapshotFromResult(saved, canvas.canvasPath)
@@ -255,13 +307,13 @@ function Canvas(): React.JSX.Element {
     baseRevision.current = snapshot.revision
     draft.current = snapshot.document
     setRevision(snapshot.revision)
-    setSyncState(current => editorStateAfterAction(current, 'saved'))
+    setEditorState(current => editorStateAfterAction(current, 'saved'))
     setStatus('Saved')
   }
 
   const reload = async (): Promise<void> => {
     if (canvas === undefined || syncState === 'Saving' || syncState === 'Loading') return
-    setSyncState(current => current === 'Conflict'
+    setEditorState(current => current === 'Conflict'
       ? editorStateAfterAction(current, 'reload')
       : 'Loading')
     setStatus('Reloading canvas')
@@ -270,7 +322,7 @@ function Canvas(): React.JSX.Element {
       if (snapshot === undefined) throw new Error('Canvas snapshot was not returned')
       applySnapshot(snapshot)
     } catch (error) {
-      setSyncState('Conflict')
+      setEditorState('Conflict')
       setStatus(error instanceof Error ? error.message : String(error))
     }
   }
@@ -283,7 +335,7 @@ function Canvas(): React.JSX.Element {
     )
     const newCanvasPath = window.prompt('Save conflict draft as', suggested)?.trim()
     if (newCanvasPath === undefined || newCanvasPath === '') return
-    setSyncState(current => editorStateAfterAction(current, 'save-copy'))
+    setEditorState(current => editorStateAfterAction(current, 'save-copy'))
     setStatus('Saving canvas copy')
     const saved = await app.callServerTool({
       name: 'save_canvas_copy',
@@ -295,13 +347,13 @@ function Canvas(): React.JSX.Element {
       },
     })
     if (saved.isError) {
-      setSyncState('Conflict')
+      setEditorState('Conflict')
       setStatus(errorMessage(saved))
       return
     }
     const nested = record(record(saved.structuredContent)?.canvas)
     if (typeof nested?.revision !== 'string' || typeof nested.canvasPath !== 'string') {
-      setSyncState('Conflict')
+      setEditorState('Conflict')
       setStatus('save_canvas_copy returned an invalid canvas')
       return
     }
@@ -311,7 +363,7 @@ function Canvas(): React.JSX.Element {
       document: draft.current,
     }
     setCanvas(snapshot)
-    setSyncState(current => editorStateAfterAction(current, 'copy-saved'))
+    setEditorState(current => editorStateAfterAction(current, 'copy-saved'))
     setStatus('Copy saved')
   }
 
@@ -389,7 +441,7 @@ function Canvas(): React.JSX.Element {
           data-save
           disabled={syncState !== 'Dirty'}
           onClick={() => void save().catch(error => {
-            setSyncState('Dirty')
+            setEditorState('Dirty')
             setStatus(error instanceof Error ? error.message : String(error))
           })}
         >
@@ -408,7 +460,7 @@ function Canvas(): React.JSX.Element {
           data-save-copy
           disabled={syncState !== 'Conflict'}
           onClick={() => void saveCopy().catch(error => {
-            setSyncState('Conflict')
+            setEditorState('Conflict')
             setStatus(error instanceof Error ? error.message : String(error))
           })}
         >
