@@ -77,3 +77,15 @@ test('editor state changes only when persistent content differs', async () => {
   )
   assert.equal(editorStateAfterChange('Conflict', baseline, baseline), 'Conflict')
 })
+
+test('explicit actions have lossless save and recovery transitions', async () => {
+  const { editorStateAfterAction } = await import(stateUrl.href)
+
+  assert.equal(editorStateAfterAction('Dirty', 'save'), 'Saving')
+  assert.equal(editorStateAfterAction('Saving', 'saved'), 'Clean')
+  assert.equal(editorStateAfterAction('Saving', 'conflict'), 'Conflict')
+  assert.equal(editorStateAfterAction('Conflict', 'reload'), 'Loading')
+  assert.equal(editorStateAfterAction('Loading', 'reloaded'), 'Clean')
+  assert.equal(editorStateAfterAction('Conflict', 'save-copy'), 'Saving')
+  assert.equal(editorStateAfterAction('Saving', 'copy-saved'), 'Clean')
+})

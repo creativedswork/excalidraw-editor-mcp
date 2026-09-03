@@ -1,5 +1,6 @@
 import { App } from '@modelcontextprotocol/ext-apps'
 import {
+  CaptureUpdateAction,
   convertToExcalidrawElements,
   Excalidraw,
   exportToBlob,
@@ -20,6 +21,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   canvasContentSummary,
+  editorStateAfterAction,
   editorStateAfterChange,
   type EditorSyncState,
 } from './view-state.js'
@@ -68,33 +70,57 @@ function errorMessage(result: CallToolResult): string {
   return text?.type === 'text' ? text.text : 'Canvas tool failed'
 }
 
+function snapshotFromResult(
+  result: CallToolResult,
+  fallbackCanvasPath?: string,
+): CanvasSnapshot {
+  if (result.isError) throw new Error(errorMessage(result))
+  const content = record(result.structuredContent)
+  const nestedCanvas = record(content?.canvas)
+  const source = nestedCanvas ?? content
+  const document = record(source?.document)
+  const canvasPath = source?.canvasPath ?? fallbackCanvasPath
+  if (
+    typeof canvasPath !== 'string'
+    || typeof source?.revision !== 'string'
+    || document?.type !== 'excalidraw'
+    || !Array.isArray(document.elements)
+    || record(document.appState) === undefined
+    || record(document.files) === undefined
+  ) {
+    throw new Error('Canvas tool returned an invalid document')
+  }
+  return {
+    canvasPath,
+    revision: source.revision,
+    document: document as CanvasDocument,
+  }
+}
+
+async function pullSnapshot(
+  canvasPath: string,
+  currentRevision?: string,
+): Promise<CanvasSnapshot | undefined> {
+  const pulled = await app.callServerTool({
+    name: 'pull_canvas',
+    arguments: {
+      canvasPath,
+      ...(currentRevision === undefined ? {} : { currentRevision }),
+    },
+  })
+  const content = record(pulled.structuredContent)
+  if (!pulled.isError && content?.changed === false) return undefined
+  return snapshotFromResult(pulled, canvasPath)
+}
+
 async function pullCanvas(result: CallToolResult): Promise<void> {
   if (result.isError) throw new Error(errorMessage(result))
   const opened = record(result.structuredContent)
   if (typeof opened?.canvasPath !== 'string' || typeof opened.revision !== 'string') {
     throw new Error('Tool result did not identify a canvas')
   }
-  const pulled = await app.callServerTool({
-    name: 'pull_canvas',
-    arguments: { canvasPath: opened.canvasPath },
-  })
-  if (pulled.isError) throw new Error(errorMessage(pulled))
-  const content = record(pulled.structuredContent)
-  const document = record(content?.document)
-  if (
-    typeof content?.revision !== 'string'
-    || document?.type !== 'excalidraw'
-    || !Array.isArray(document.elements)
-    || record(document.appState) === undefined
-    || record(document.files) === undefined
-  ) {
-    throw new Error('pull_canvas returned an invalid document')
-  }
-  pendingCanvas = {
-    canvasPath: opened.canvasPath,
-    revision: content.revision,
-    document: document as CanvasDocument,
-  }
+  pendingCanvas = await pullSnapshot(opened.canvasPath)
+  if (pendingCanvas === undefined) throw new Error('Canvas snapshot was not returned')
   renderCanvas?.(pendingCanvas)
 }
 
@@ -132,8 +158,10 @@ function Canvas(): React.JSX.Element {
   const [displayMode, setDisplayMode] = useState('inline')
   const [status, setStatus] = useState('Ready')
   const [canvas, setCanvas] = useState(pendingCanvas)
+  const [revision, setRevision] = useState(canvas?.revision)
   const [syncState, setSyncState] = useState<EditorSyncState>('Loading')
   const baseSummary = useRef('')
+  const baseRevision = useRef('')
   const draft = useRef<CanvasDocument>()
 
   useEffect(() => {
@@ -147,7 +175,9 @@ function Canvas(): React.JSX.Element {
   useEffect(() => {
     if (canvas === undefined) return
     baseSummary.current = canvasContentSummary(canvas.document)
+    baseRevision.current = canvas.revision
     draft.current = canvas.document
+    setRevision(canvas.revision)
     setSyncState('Clean')
   }, [canvas])
 
@@ -183,6 +213,106 @@ function Canvas(): React.JSX.Element {
       baseSummary.current,
       summary,
     ))
+  }
+
+  const applySnapshot = (snapshot: CanvasSnapshot): void => {
+    const restored = restore(snapshot.document, null, null)
+    api?.updateScene({
+      elements: restored.elements,
+      appState: restored.appState,
+      captureUpdate: CaptureUpdateAction.NEVER,
+    })
+    if (restored.files !== undefined) api?.addFiles(Object.values(restored.files))
+    baseSummary.current = canvasContentSummary(snapshot.document)
+    baseRevision.current = snapshot.revision
+    draft.current = snapshot.document
+    setRevision(snapshot.revision)
+    setSyncState('Clean')
+    setStatus('Ready')
+  }
+
+  const save = async (): Promise<void> => {
+    if (canvas === undefined || draft.current === undefined || syncState !== 'Dirty') return
+    setSyncState(current => editorStateAfterAction(current, 'save'))
+    setStatus('Saving canvas')
+    const saved = await app.callServerTool({
+      name: 'push_canvas',
+      arguments: {
+        canvasPath: canvas.canvasPath,
+        baseRevision: baseRevision.current,
+        mutationId: crypto.randomUUID(),
+        document: draft.current,
+      },
+    })
+    if (saved.isError) {
+      const message = errorMessage(saved)
+      setStatus(message)
+      setSyncState(message.includes('revision conflict') ? 'Conflict' : 'Dirty')
+      return
+    }
+    const snapshot = snapshotFromResult(saved, canvas.canvasPath)
+    baseSummary.current = canvasContentSummary(snapshot.document)
+    baseRevision.current = snapshot.revision
+    draft.current = snapshot.document
+    setRevision(snapshot.revision)
+    setSyncState(current => editorStateAfterAction(current, 'saved'))
+    setStatus('Saved')
+  }
+
+  const reload = async (): Promise<void> => {
+    if (canvas === undefined || syncState === 'Saving' || syncState === 'Loading') return
+    setSyncState(current => current === 'Conflict'
+      ? editorStateAfterAction(current, 'reload')
+      : 'Loading')
+    setStatus('Reloading canvas')
+    try {
+      const snapshot = await pullSnapshot(canvas.canvasPath)
+      if (snapshot === undefined) throw new Error('Canvas snapshot was not returned')
+      applySnapshot(snapshot)
+    } catch (error) {
+      setSyncState('Conflict')
+      setStatus(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const saveCopy = async (): Promise<void> => {
+    if (canvas === undefined || draft.current === undefined || syncState !== 'Conflict') return
+    const suggested = canvas.canvasPath.replace(
+      /\.excalidraw$/,
+      `-copy-${String(Date.now())}.excalidraw`,
+    )
+    const newCanvasPath = window.prompt('Save conflict draft as', suggested)?.trim()
+    if (newCanvasPath === undefined || newCanvasPath === '') return
+    setSyncState(current => editorStateAfterAction(current, 'save-copy'))
+    setStatus('Saving canvas copy')
+    const saved = await app.callServerTool({
+      name: 'save_canvas_copy',
+      arguments: {
+        canvasPath: canvas.canvasPath,
+        newCanvasPath,
+        mutationId: crypto.randomUUID(),
+        document: draft.current,
+      },
+    })
+    if (saved.isError) {
+      setSyncState('Conflict')
+      setStatus(errorMessage(saved))
+      return
+    }
+    const nested = record(record(saved.structuredContent)?.canvas)
+    if (typeof nested?.revision !== 'string' || typeof nested.canvasPath !== 'string') {
+      setSyncState('Conflict')
+      setStatus('save_canvas_copy returned an invalid canvas')
+      return
+    }
+    const snapshot = {
+      canvasPath: nested.canvasPath,
+      revision: nested.revision,
+      document: draft.current,
+    }
+    setCanvas(snapshot)
+    setSyncState(current => editorStateAfterAction(current, 'copy-saved'))
+    setStatus('Copy saved')
   }
 
   const download = async (format: 'json' | 'svg' | 'png'): Promise<void> => {
@@ -249,9 +379,45 @@ function Canvas(): React.JSX.Element {
 
   return (
     <main data-excalidraw-m0 data-display-mode={displayMode}>
+      <nav className="m2-statusbar" aria-label="Canvas sync status">
+        <span data-canvas-path title={canvas?.canvasPath}>
+          {canvas?.canvasPath ?? 'No canvas'}
+        </span>
+        <output data-sync-state>{syncState === 'Clean' ? 'Saved' : syncState}</output>
+        <button
+          type="button"
+          data-save
+          disabled={syncState !== 'Dirty'}
+          onClick={() => void save().catch(error => {
+            setSyncState('Dirty')
+            setStatus(error instanceof Error ? error.message : String(error))
+          })}
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          data-reload
+          disabled={canvas === undefined || syncState === 'Loading' || syncState === 'Saving'}
+          onClick={() => void reload()}
+        >
+          Reload
+        </button>
+        <button
+          type="button"
+          data-save-copy
+          disabled={syncState !== 'Conflict'}
+          onClick={() => void saveCopy().catch(error => {
+            setSyncState('Conflict')
+            setStatus(error instanceof Error ? error.message : String(error))
+          })}
+        >
+          Save as copy
+        </button>
+      </nav>
       <div className="m0-canvas">
         <Excalidraw
-          key={canvas?.revision ?? 'm0-seed'}
+          key={canvas?.canvasPath ?? 'm0-seed'}
           excalidrawAPI={setApi}
           initialData={initialData}
           langCode="en"
@@ -282,7 +448,7 @@ function Canvas(): React.JSX.Element {
             {format.toUpperCase()}
           </button>
         ))}
-        <output data-m0-status>{status}</output>
+        <output data-m0-status title={revision}>{status}</output>
       </nav>
     </main>
   )

@@ -16,7 +16,55 @@ body,
 
 .m0-canvas {
   position: absolute;
-  inset: 0;
+  inset: 37px 0 0;
+}
+
+.m2-statusbar {
+  position: absolute;
+  z-index: 20;
+  inset: 0 0 auto;
+  display: flex;
+  height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-bottom: 1px solid #d6d6dd;
+  background: rgb(255 255 255 / 96%);
+  color: #1b1b1f;
+  font: 12px/1 system-ui, sans-serif;
+}
+
+.m2-statusbar [data-canvas-path] {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m2-statusbar output {
+  margin-left: auto;
+  color: #666;
+}
+
+.m2-statusbar button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid #d6d6dd;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: 600 11px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.m2-statusbar button:hover:not(:disabled) {
+  background: #ececf4;
+}
+
+.m2-statusbar button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .m0-actions {
@@ -63,6 +111,24 @@ body,
 :root[data-theme="dark"] .m0-actions {
   border-color: #494950;
   background: rgb(35 35 38 / 94%);
+}
+
+:root[data-theme="dark"] .m2-statusbar {
+  border-color: #494950;
+  background: rgb(35 35 38 / 96%);
+  color: #f4f4f5;
+}
+
+:root[data-theme="dark"] .m2-statusbar output {
+  color: #aaa;
+}
+
+:root[data-theme="dark"] .m2-statusbar button {
+  border-color: #494950;
+}
+
+:root[data-theme="dark"] .m2-statusbar button:hover:not(:disabled) {
+  background: #3b3b42;
 }
 
 :root[data-theme="dark"] .m0-actions button {

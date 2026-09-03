@@ -5,6 +5,15 @@ export type EditorSyncState =
   | 'Saving'
   | 'Conflict'
 
+export type EditorAction =
+  | 'save'
+  | 'saved'
+  | 'conflict'
+  | 'reload'
+  | 'reloaded'
+  | 'save-copy'
+  | 'copy-saved'
+
 const PERSISTED_APP_STATE_KEYS = [
   'gridSize',
   'gridStep',
@@ -46,4 +55,17 @@ export function editorStateAfterChange(
 ): EditorSyncState {
   if (state === 'Loading' || state === 'Saving' || state === 'Conflict') return state
   return currentSummary === baseSummary ? 'Clean' : 'Dirty'
+}
+
+export function editorStateAfterAction(
+  state: EditorSyncState,
+  action: EditorAction,
+): EditorSyncState {
+  if ((action === 'save' && state === 'Dirty')
+    || (action === 'save-copy' && state === 'Conflict')) return 'Saving'
+  if ((action === 'saved' || action === 'copy-saved') && state === 'Saving') return 'Clean'
+  if (action === 'conflict' && state === 'Saving') return 'Conflict'
+  if (action === 'reload' && state === 'Conflict') return 'Loading'
+  if (action === 'reloaded' && state === 'Loading') return 'Clean'
+  return state
 }
