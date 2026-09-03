@@ -26,6 +26,7 @@ import {
   type CanvasDocument,
   canvasDocumentSchema,
 } from './canvas-store.js'
+import { inspectCanvas } from './canvas-operations.js'
 import {
   ProjectStore,
   type CanvasSummary,
@@ -359,20 +360,41 @@ function createServer(): McpServer {
 
   registerAppTool(server, 'inspect_canvas', {
     title: 'Inspect Excalidraw canvas',
-    description: 'Returns bounded metadata and optionally the standard document.',
+    description: 'Returns filtered, paginated semantic elements and optionally a small standard document.',
     inputSchema: {
       projectPath: pathSchema,
       canvasPath: pathSchema,
+      ids: z.array(z.string().min(1).max(128)).max(100).optional(),
+      types: z.array(z.string().min(1).max(40)).max(20).optional(),
+      text: z.string().max(500).optional(),
+      cursor: z.string().max(1_000).optional(),
+      limit: z.number().int().min(1).max(100).default(50),
       includeDocument: z.boolean().default(false),
     },
     _meta: { ui: { visibility: ['model'] } },
-  }, async ({ projectPath, canvasPath, includeDocument }, { _meta }) => {
+  }, async ({
+    projectPath,
+    canvasPath,
+    ids,
+    types,
+    text,
+    cursor,
+    limit,
+    includeDocument,
+  }, { _meta }) => {
     const canvas = await (await projectStore(_meta)).openCanvas(projectPath, canvasPath)
+    if (
+      includeDocument
+      && Buffer.byteLength(JSON.stringify(canvas.document), 'utf8') > 128 * 1024
+    ) {
+      throw new Error('includeDocument is limited to 131072 bytes; use semantic pagination')
+    }
     return result('Inspected Excalidraw canvas.', {
       canvasPath: canvas.canvasPath,
       revision: canvas.revision,
       elementCount: canvas.document.elements.length,
       source: canvas.document.source,
+      ...inspectCanvas(canvas.document, { ids, types, text, cursor, limit }),
       ...(includeDocument ? { document: canvas.document } : {}),
     })
   })
