@@ -7,12 +7,22 @@ import {
   restore,
   serializeAsJSON,
 } from '@excalidraw/excalidraw'
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
+import type {
+  AppState,
+  BinaryFiles,
+  ExcalidrawImperativeAPI,
+} from '@excalidraw/excalidraw/types'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import '@excalidraw/excalidraw/index.css'
 import './styles.css'
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import {
+  canvasContentSummary,
+  editorStateAfterChange,
+  type EditorSyncState,
+} from './view-state.js'
 
 declare global {
   interface Window {
@@ -21,6 +31,8 @@ declare global {
       elementCount: () => number
       selectedIds: () => string[]
       displayMode: () => string
+      syncState: () => EditorSyncState
+      draftSummary: () => string | undefined
     }
   }
 }
@@ -120,6 +132,9 @@ function Canvas(): React.JSX.Element {
   const [displayMode, setDisplayMode] = useState('inline')
   const [status, setStatus] = useState('Ready')
   const [canvas, setCanvas] = useState(pendingCanvas)
+  const [syncState, setSyncState] = useState<EditorSyncState>('Loading')
+  const baseSummary = useRef('')
+  const draft = useRef<CanvasDocument>()
 
   useEffect(() => {
     renderCanvas = setCanvas
@@ -130,16 +145,45 @@ function Canvas(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    if (canvas === undefined) return
+    baseSummary.current = canvasContentSummary(canvas.document)
+    draft.current = canvas.document
+    setSyncState('Clean')
+  }, [canvas])
+
+  useEffect(() => {
     if (api === undefined) return
     window.__EXCALIDRAW_M0__ = {
       elementCount: () => api.getSceneElements().length,
       selectedIds: () => Object.keys(api.getAppState().selectedElementIds),
       displayMode: () => displayMode,
+      syncState: () => syncState,
+      draftSummary: () => draft.current === undefined
+        ? undefined
+        : canvasContentSummary(draft.current),
     }
     return () => {
       delete window.__EXCALIDRAW_M0__
     }
-  }, [api, displayMode])
+  }, [api, displayMode, syncState])
+
+  const onChange = (
+    elements: readonly ExcalidrawElement[],
+    appState: AppState,
+    files: BinaryFiles,
+  ) => {
+    if (canvas === undefined) return
+    const document = JSON.parse(
+      serializeAsJSON(elements, appState, files, 'local'),
+    ) as CanvasDocument
+    const summary = canvasContentSummary(document)
+    draft.current = document
+    setSyncState(current => editorStateAfterChange(
+      current,
+      baseSummary.current,
+      summary,
+    ))
+  }
 
   const download = async (format: 'json' | 'svg' | 'png'): Promise<void> => {
     if (api === undefined) return
@@ -212,6 +256,7 @@ function Canvas(): React.JSX.Element {
           initialData={initialData}
           langCode="en"
           name="Excalidraw M0"
+          onChange={onChange}
         />
       </div>
       <nav className="m0-actions" aria-label="M0 canvas actions">
