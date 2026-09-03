@@ -4,9 +4,11 @@ import {
   Excalidraw,
   exportToBlob,
   exportToSvg,
+  restore,
   serializeAsJSON,
 } from '@excalidraw/excalidraw'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import '@excalidraw/excalidraw/index.css'
 import './styles.css'
 import React, { useEffect, useState } from 'react'
@@ -31,6 +33,58 @@ const app = new App(
   {},
   { strict: true },
 )
+
+type CanvasDocument = NonNullable<Parameters<typeof restore>[0]>
+
+interface CanvasSnapshot {
+  canvasPath: string
+  revision: string
+  document: CanvasDocument
+}
+
+let pendingCanvas: CanvasSnapshot | undefined
+let renderCanvas: ((snapshot: CanvasSnapshot) => void) | undefined
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function errorMessage(result: CallToolResult): string {
+  const text = result.content.find(block => block.type === 'text')
+  return text?.type === 'text' ? text.text : 'Canvas tool failed'
+}
+
+async function pullCanvas(result: CallToolResult): Promise<void> {
+  if (result.isError) throw new Error(errorMessage(result))
+  const opened = record(result.structuredContent)
+  if (typeof opened?.canvasPath !== 'string' || typeof opened.revision !== 'string') {
+    throw new Error('Tool result did not identify a canvas')
+  }
+  const pulled = await app.callServerTool({
+    name: 'pull_canvas',
+    arguments: { canvasPath: opened.canvasPath },
+  })
+  if (pulled.isError) throw new Error(errorMessage(pulled))
+  const content = record(pulled.structuredContent)
+  const document = record(content?.document)
+  if (
+    typeof content?.revision !== 'string'
+    || document?.type !== 'excalidraw'
+    || !Array.isArray(document.elements)
+    || record(document.appState) === undefined
+    || record(document.files) === undefined
+  ) {
+    throw new Error('pull_canvas returned an invalid document')
+  }
+  pendingCanvas = {
+    canvasPath: opened.canvasPath,
+    revision: content.revision,
+    document: document as CanvasDocument,
+  }
+  renderCanvas?.(pendingCanvas)
+}
 
 function embeddedText(name: string, mimeType: string, text: string) {
   return app.downloadFile({
@@ -65,6 +119,15 @@ function Canvas(): React.JSX.Element {
   const [api, setApi] = useState<ExcalidrawImperativeAPI>()
   const [displayMode, setDisplayMode] = useState('inline')
   const [status, setStatus] = useState('Ready')
+  const [canvas, setCanvas] = useState(pendingCanvas)
+
+  useEffect(() => {
+    renderCanvas = setCanvas
+    if (pendingCanvas !== undefined) setCanvas(pendingCanvas)
+    return () => {
+      renderCanvas = undefined
+    }
+  }, [])
 
   useEffect(() => {
     if (api === undefined) return
@@ -119,29 +182,34 @@ function Canvas(): React.JSX.Element {
     requestAnimationFrame(() => api?.refresh())
   }
 
+  const initialData = canvas === undefined
+    ? {
+        elements: convertToExcalidrawElements([{
+          type: 'rectangle' as const,
+          id: 'm0-seed',
+          x: 160,
+          y: 140,
+          width: 260,
+          height: 140,
+          backgroundColor: '#a5d8ff',
+          fillStyle: 'solid' as const,
+          label: { text: 'Excalidraw M0' },
+        }], { regenerateIds: false }),
+        appState: {
+          viewBackgroundColor: '#f8f9fa',
+          currentItemFontFamily: 5 as const,
+        },
+        scrollToContent: true,
+      }
+    : restore(canvas.document, null, null)
+
   return (
     <main data-excalidraw-m0 data-display-mode={displayMode}>
       <div className="m0-canvas">
         <Excalidraw
+          key={canvas?.revision ?? 'm0-seed'}
           excalidrawAPI={setApi}
-          initialData={{
-            elements: convertToExcalidrawElements([{
-              type: 'rectangle',
-              id: 'm0-seed',
-              x: 160,
-              y: 140,
-              width: 260,
-              height: 140,
-              backgroundColor: '#a5d8ff',
-              fillStyle: 'solid',
-              label: { text: 'Excalidraw M0' },
-            }], { regenerateIds: false }),
-            appState: {
-              viewBackgroundColor: '#f8f9fa',
-              currentItemFontFamily: 5,
-            },
-            scrollToContent: true,
-          }}
+          initialData={initialData}
           langCode="en"
           name="Excalidraw M0"
         />
@@ -175,6 +243,14 @@ function Canvas(): React.JSX.Element {
   )
 }
 
+app.ontoolresult = result => {
+  void pullCanvas(result).catch(error => {
+    const status = document.querySelector<HTMLOutputElement>('[data-m0-status]')
+    if (status !== null) {
+      status.textContent = error instanceof Error ? error.message : String(error)
+    }
+  })
+}
 app.onhostcontextchanged = context => {
   const theme = context.theme
   if (theme !== undefined) document.documentElement.dataset.theme = theme

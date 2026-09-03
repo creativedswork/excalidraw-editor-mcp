@@ -14,6 +14,7 @@ M1 已完成 S1-S4：
 4. 工程内画布支持创建、打开、检查、重命名、复制和删除，并保持默认画布一致性。
 5. MCP Server 从可信 DSH metadata 获取 Workspace，按 Session 限制 app-only 画布访问。
 6. 发布 tarball 可安装，并可从临时工程启动 stdio Server、列出 M1 工具。
+7. create/open 关联 View 从 invoking tool result 取得画布引用，并首次拉取和加载完整持久化文档。
 
 ## 环境
 
@@ -31,6 +32,8 @@ M1 已完成 S1-S4：
 | `pnpm typecheck` | PASS |
 | `node --test tests/m1-store.test.mjs tests/m1-project-store.test.mjs tests/m1-canvas-lifecycle.test.mjs tests/m1-mcp.test.mjs` | PASS，12/12 |
 | `pnpm test` | build PASS；测试 15/15 PASS；packed install PASS |
+| F3 `node --test tests/m1-mcp.test.mjs tests/m0.test.mjs` | PASS，4/4 |
+| F3 目标 `open_canvas -> pull_canvas` 协议链 | PASS，revision `39d588...`，92 elements |
 
 `pnpm test` 的 Node 测试耗时约 12.5 秒，其中 packed install 约 11.6 秒。
 本环境的命令包装器在全部断言通过后阻止 pnpm 清理
@@ -57,6 +60,7 @@ IIFE 产物可运行，warning 治理保留到 Release Hardening。
 - `5b6407c feat: add project lifecycle storage`
 - `ec8f607 feat: add canvas lifecycle operations`
 - `6cec45c feat: wire workspace canvas MCP tools`
+- `本提交 fix: load opened canvas in MCP App`
 
 功能实现为数小时量级；集中自测与失败归因、定向复验和收口为数十分钟量级。
 
@@ -95,8 +99,8 @@ Session。必须提前配置有效的模型凭据和可用额度；默认提供�
 `DEEPSEEK_API_KEY`。`forwardWorkspace: true` 只应授予受信任的本地 stdio
 Server。
 
-当前 App Resource 的 `dist/view.js` 为 8,023,750 B，
-`dist/style.css` 为 163,399 B，合计 8,187,149 B。必须保留
+当前 App Resource 的 `dist/view.js` 为 8,024,897 B，
+`dist/style.css` 为 163,399 B，合计 8,188,296 B。必须保留
 `maxBodyBytes: 16777216`；`2097152` 会在工具成功后导致 Host 拒绝关联
 Resource。
 
@@ -162,6 +166,69 @@ Browser 截图接口在 offscreen 捕获时被限流，未能保存
 MCP App shell 的加载与渲染路径，不声称持久化画布内容已同步到 View，也
 不声称取得跨域 canvas 像素数据。
 
+## F3 首次画布加载修复
+
+用户验收 Session
+`session-7063f27b-0dfa-431b-975d-25818c709233` 中，目标
+`excalidraw/default-canvas/main.excalidraw` 已由 `open_canvas` 成功打开，
+revision 为
+`39d5880025cd7e51bc135ab6f2d8fafa1453c8d19aac3340d0e8952a179f1895`，
+磁盘文档包含 92 elements，但关联 View 仍显示 M0 静态内容。证据来自：
+
+- `/Users/bytedanceo/Downloads/dsh-session-session-7063f27b-0dfa-431b-975d-25818c709233 (1)/session.jsonl`
+- `/Users/bytedanceo/Workspace/DeepSeekSpace/threejs-editor-mcp/tests/fixtures/m6/workspace/excalidraw/default-canvas/main.excalidraw`
+
+根因是 `src/view.tsx` 未读取 invoking tool result，也未调用已存在的
+app-only `pull_canvas`。F3 的最小修复为：
+
+1. `create_project`、`open_project`、`create_canvas`、`open_canvas` 统一在
+   `structuredContent` 顶层返回 `canvasPath/revision`。
+2. View 在 `app.connect()` 前注册 `app.ontoolresult`，避免错过一次性通知。
+3. View 仅在首次 tool result 到达后调用 `pull_canvas`，再通过官方
+   `restore()` 和 `initialData` 加载 `elements/appState/files`。
+
+修复前，新增协议断言按预期失败：
+
+```text
+create_project.structuredContent.canvasPath
+actual: undefined
+```
+
+修复后验证：
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm typecheck` | PASS |
+| `pnpm build` | PASS |
+| `node --test tests/m1-mcp.test.mjs tests/m0.test.mjs` | PASS，4/4 |
+| App Resource | 8,188,296 B，低于 16 MiB；包含 `pull_canvas` 与 test hook |
+| 目标协议重放 | open/pull revision 一致；`changed=true`；标准文档 92 elements、4 个 appState keys、0 files |
+
+真实 Host PID `57670` 在整个 F3 phase 保持存活，`http://127.0.0.1:3080/`
+持续返回 HTTP 200。build 后仅 Excalidraw MCP phase 重连；新 PID 为
+connection generation 为 `868888f1-ee1a-4a7f-ac3f-1f8306105f2a`，
+`open_canvas` View 为 `1a57e711-bba3-4284-8403-6d898a51df30`。
+
+仓库 Playwright 使用现存 Chromium 精确点击了
+`page.getByText('创建一个默认画布', { exact: true })`。该文本节点为
+`SPAN`，父节点为已选中的 `DIV[role=treeitem]`。页面共有 9 个 frame，
+其中 4 个包含 `window.__EXCALIDRAW_M0__`，但
+`elementCount()` 均为 2：
+
+- 两个历史 create/open_project 结果显示
+  `Tool result did not identify a canvas`，因为持久化 Session 记录来自 F3
+  之前，不含新的顶层 `canvasPath/revision`。
+- 两个历史 open_canvas 结果显示
+  `canvas is not bound to this app session`，因为最终 build 只重启了
+  Excalidraw MCP phase，新的 server 进程没有旧进程的内存 Session 绑定。
+
+截图 `.tmp/m1/f3-runtime-target-attempt2.png` 证明原 Workspace 与原 Session
+已打开；View 位于当前滚动区域之外，截图没有目标画布像素。按本轮最多两次
+定向尝试的限制，未再提交新的模型调用。因此本节只将最终 build 的协议与
+数据链记为 PASS，不将真实 DSH 像素渲染记为 PASS。用户仍需在该 Session
+重新调用一次 `open_canvas`，确认新工具结果关联 View 的
+`elementCount() === 92`；M1 保持 `AWAITING_ACCEPTANCE`。
+
 ## 用户验收用例
 
 以下路径均相对于在 DSH 中选择的 Workspace。自然语言提示词可直接粘贴；
@@ -178,8 +245,7 @@ MCP App shell 的加载与渲染路径，不声称持久化画布内容已同步
   `acceptance/demo/main.excalidraw`。
 - 期望结果：manifest 的 `name` 为 `Acceptance Demo`，
   `defaultCanvasPath` 为 `main.excalidraw`；画布是可打开的标准空白
-  `.excalidraw` 文档；关联的通用 App shell 可以加载。M1 View 仍是 M0
-  shell，不要求它读取或显示刚创建的持久化画布内容。
+  `.excalidraw` 文档；关联 View 拉取并显示该默认画布。
 - 失败判定：工具未出现或报错；关联 App shell 不渲染；任一文件缺失、
   越出 Workspace、JSON 无效，或重复同一 `mutationId` 得到不一致结果。
 
@@ -194,7 +260,8 @@ MCP App shell 的加载与渲染路径，不声称持久化画布内容已同步
   两个文件都存在；`open_canvas` 返回被打开的路径和 revision；
   `inspect_canvas` 返回 `elementCount`、`source` 和 64 位 revision。
 - 期望结果：画布数为 2；两次 inspect 均成功；打开一个画布不会删除或
-  改写另一个画布。M1 不验收 View 切换或持久化画布内容同步。
+  改写另一个画布；每个 create/open 结果关联的 View 首次显示对应持久化
+  画布。持续编辑后的 dirty/save/conflict/polling 属于 M2。
 - 失败判定：遗漏任一画布、路径跨出工程、revision 格式错误、打开错误
   画布，或 inspect 结果与对应文件不一致。
 
@@ -209,8 +276,8 @@ MCP App shell 的加载与渲染路径，不声称持久化画布内容已同步
   存在；工程仍为 managed；`open_project`/`open_canvas` 返回正确路径和
   revision；未修改文件的 revision 不变。
 - 期望结果：已保存文件跨页面和 DSH 重启持久化；新 Session 通过显式
-  open 重新建立 app-only 画布绑定。M1 不验收 View dirty/save/conflict
-  状态、View 内容恢复或持久化画布同步，这些属于 M2。
+  open 重新建立 app-only 画布绑定，关联 View 首次加载持久化文档。M1
+  不验收 View dirty/save/conflict/polling 状态，这些属于 M2。
 - 失败判定：文件丢失或无操作却 revision 改变；工程无法发现/打开；新
   Session 可在未 open 的情况下调用 app-only 保存工具。未保存的 View
   dirty 状态和跨重启恢复属于 M2，M1 不承诺。

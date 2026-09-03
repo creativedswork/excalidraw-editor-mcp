@@ -40,6 +40,16 @@ test('stdio tools manage a standard canvas without loading the View', async (t) 
   assert.equal(created.isError, undefined)
   const project = created.structuredContent.project
   assert.equal(project.defaultCanvasPath, 'designs/demo/main.excalidraw')
+  assert.equal(created.structuredContent.canvasPath, project.defaultCanvasPath)
+  assert.equal(created.structuredContent.revision, project.canvases[0].revision)
+
+  const openedProject = await client.callTool({
+    name: 'open_project',
+    arguments: { projectPath: project.projectPath },
+    _meta: meta,
+  })
+  assert.equal(openedProject.structuredContent.canvasPath, project.defaultCanvasPath)
+  assert.equal(openedProject.structuredContent.revision, project.canvases[0].revision)
 
   const added = await client.callTool({
     name: 'create_canvas',
@@ -52,6 +62,19 @@ test('stdio tools manage a standard canvas without loading the View', async (t) 
     _meta: meta,
   })
   assert.equal(added.isError, undefined)
+  assert.equal(added.structuredContent.canvasPath, added.structuredContent.canvas.canvasPath)
+  assert.equal(added.structuredContent.revision, added.structuredContent.canvas.revision)
+
+  const openedCanvas = await client.callTool({
+    name: 'open_canvas',
+    arguments: {
+      projectPath: project.projectPath,
+      canvasPath: added.structuredContent.canvasPath,
+    },
+    _meta: meta,
+  })
+  assert.equal(openedCanvas.structuredContent.canvasPath, added.structuredContent.canvasPath)
+  assert.equal(openedCanvas.structuredContent.revision, added.structuredContent.revision)
 
   const inspected = await client.callTool({
     name: 'inspect_canvas',

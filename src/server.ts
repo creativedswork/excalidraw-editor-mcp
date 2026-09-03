@@ -19,6 +19,7 @@ import {
 } from './canvas-store.js'
 import {
   ProjectStore,
+  type CanvasSummary,
   type ProjectSummary,
 } from './project-store.js'
 
@@ -127,9 +128,14 @@ function bindProject(
   meta: Record<string, unknown> | undefined,
   store: ProjectStore,
   project: ProjectSummary,
-): void {
+): CanvasSummary {
   if (project.defaultCanvasPath === null) throw new Error('project has no default canvas')
-  bindCanvas(meta, store, project.projectPath, project.defaultCanvasPath)
+  const canvas = project.canvases.find(
+    candidate => candidate.canvasPath === project.defaultCanvasPath,
+  )
+  if (canvas === undefined) throw new Error('project default canvas is unavailable')
+  bindCanvas(meta, store, project.projectPath, canvas.canvasPath)
+  return canvas
 }
 
 function createServer(): McpServer {
@@ -165,8 +171,8 @@ function createServer(): McpServer {
   }, async (input, { _meta }) => {
     const store = await projectStore(_meta)
     const project = await store.create(input)
-    bindProject(_meta, store, project)
-    return result('Created Excalidraw project.', { project })
+    const canvas = bindProject(_meta, store, project)
+    return result('Created Excalidraw project.', { project, ...canvas })
   })
 
   registerAppTool(server, 'open_project', {
@@ -182,8 +188,8 @@ function createServer(): McpServer {
   }, async ({ projectPath }, { _meta }) => {
     const store = await projectStore(_meta)
     const project = await store.inspect(projectPath)
-    bindProject(_meta, store, project)
-    return result('Opened Excalidraw project.', { project })
+    const canvas = bindProject(_meta, store, project)
+    return result('Opened Excalidraw project.', { project, ...canvas })
   })
 
   registerAppTool(server, 'inspect_project', {
@@ -271,7 +277,11 @@ function createServer(): McpServer {
     const store = await projectStore(_meta)
     const created = await store.createCanvas(input)
     bindCanvas(_meta, store, input.projectPath, created.canvas.canvasPath)
-    return result('Created Excalidraw canvas.', { ...created })
+    return result('Created Excalidraw canvas.', {
+      ...created,
+      canvasPath: created.canvas.canvasPath,
+      revision: created.canvas.revision,
+    })
   })
 
   registerAppTool(server, 'open_canvas', {
