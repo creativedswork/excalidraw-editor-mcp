@@ -69,7 +69,7 @@ test('stdio tools manage a standard canvas without loading the View', async (t) 
   const pulled = await client.callTool({
     name: 'pull_canvas',
     arguments: {
-      canvasPath: project.defaultCanvasPath,
+      canvasPath: 'designs/demo/flow.excalidraw',
     },
     _meta: {
       [sessionKey]: { sessionId: 'm1-test', connectionGeneration: 'test' },

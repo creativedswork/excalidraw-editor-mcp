@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-const storeUrl = new URL('../dist/project-store.js', import.meta.url)
+const projectStoreUrl = new URL('../dist/project-store.js', import.meta.url)
+const canvasStoreUrl = new URL('../dist/canvas-store.js', import.meta.url)
 
 async function fixture(t) {
   const { mkdtemp } = await import('node:fs/promises')
   const root = await mkdtemp(join(tmpdir(), 'excalidraw-m1-project-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  const { ProjectStore, SafeWorkspace } = await import(storeUrl.href)
+  const { ProjectStore } = await import(projectStoreUrl.href)
+  const { SafeWorkspace } = await import(canvasStoreUrl.href)
   return { root, store: new ProjectStore(await SafeWorkspace.open(root)) }
 }
 

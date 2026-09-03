@@ -39,7 +39,7 @@ test('canvas store confines paths and rejects symlink traversal', async (t) => {
   ]) {
     await assert.rejects(
       store.create(path, `invalid-${path}`, documentWith('invalid')),
-      /invalid|must end|symlink/,
+      /invalid|must end|symlink|not a real directory/,
     )
   }
 })
