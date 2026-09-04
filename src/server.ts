@@ -580,6 +580,39 @@ function createServer(): McpServer {
     await (await projectStore(_meta)).checkCanvas(projectPath, canvasPath),
   ))
 
+  registerAppTool(server, 'add_canvas_asset', {
+    title: 'Add Excalidraw canvas asset',
+    description: 'Imports one bounded local raster image from the current Workspace.',
+    inputSchema: {
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      sourcePath: pathSchema.describe(
+        'Workspace-relative path to a local PNG, JPEG, GIF, or WebP image. URLs are not accepted.',
+      ),
+      baseRevision: revisionSchema,
+      mutationId: mutationSchema,
+    },
+    _meta: { ui: { visibility: ['model'] } },
+  }, async (input, { _meta }) => result(
+    'Added Excalidraw canvas asset.',
+    await (await projectStore(_meta)).addCanvasAsset(input),
+  ))
+
+  registerAppTool(server, 'remove_unused_assets', {
+    title: 'Remove unused Excalidraw canvas assets',
+    description: 'Atomically removes files not referenced by any live image element.',
+    inputSchema: {
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      baseRevision: revisionSchema,
+      mutationId: mutationSchema,
+    },
+    _meta: { ui: { visibility: ['model'] } },
+  }, async (input, { _meta }) => result(
+    'Removed unused Excalidraw canvas assets.',
+    await (await projectStore(_meta)).removeUnusedAssets(input),
+  ))
+
   registerAppTool(server, 'apply_canvas_changes', {
     title: 'Apply Excalidraw canvas changes',
     description: 'Atomically applies semantic element and canvas changes at one base revision.',

@@ -11,6 +11,11 @@ import {
 import { basename, dirname, join, posix, relative } from 'node:path'
 import { z } from 'zod'
 import {
+  MAX_TOTAL_ASSET_BYTES,
+  loadWorkspaceImage,
+  totalAssetBytes,
+} from './assets.js'
+import {
   CanvasStore,
   type CanvasDocument,
   type CanvasSnapshot,
@@ -169,6 +174,137 @@ export class ProjectStore {
       errors: [],
       warnings: [],
     }
+  }
+
+  async addCanvasAsset(input: {
+    projectPath: string
+    canvasPath: string
+    sourcePath: string
+    baseRevision: string
+    mutationId: string
+  }): Promise<{
+    canvasPath: string
+    assetId: string
+    mimeType: string
+    width: number
+    height: number
+    hash: string
+    byteLength: number
+    revision: string
+    changed: boolean
+  }> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const sourcePath = this.workspace.validateProjectPath(input.sourcePath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'addCanvasAsset',
+      ...input,
+      projectPath,
+      canvasPath,
+      sourcePath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const project = await this.inspect(projectPath)
+      this.requireCanvas(project, canvasPath)
+      const current = await this.canvases.read(canvasPath)
+      if (current.revision !== input.baseRevision) {
+        throw new RevisionConflictError(current.revision)
+      }
+      const asset = await loadWorkspaceImage(this.workspace, sourcePath)
+      const created = Date.now()
+      const document: CanvasDocument = {
+        ...current.document,
+        files: current.document.files[asset.assetId] === undefined
+          ? {
+              ...current.document.files,
+              [asset.assetId]: {
+                id: asset.assetId,
+                mimeType: asset.mimeType,
+                dataURL: asset.dataURL,
+                created,
+                lastRetrieved: created,
+              },
+            }
+          : current.document.files,
+      }
+      const aggregateBytes = totalAssetBytes(document.files)
+      if (aggregateBytes > MAX_TOTAL_ASSET_BYTES) {
+        throw new Error(`canvas assets exceed ${String(MAX_TOTAL_ASSET_BYTES)} bytes`)
+      }
+      canonicalCanvasBytes(document)
+      const canvas = await this.canvases.write(
+        canvasPath,
+        input.baseRevision,
+        `canvas-asset:${input.mutationId}`,
+        document,
+      )
+      return {
+        canvasPath,
+        assetId: asset.assetId,
+        mimeType: asset.mimeType,
+        width: asset.width,
+        height: asset.height,
+        hash: asset.hash,
+        byteLength: asset.byteLength,
+        revision: canvas.revision,
+        changed: canvas.changed,
+      }
+    }))
+  }
+
+  async removeUnusedAssets(input: {
+    projectPath: string
+    canvasPath: string
+    baseRevision: string
+    mutationId: string
+  }): Promise<{
+    canvasPath: string
+    revision: string
+    changed: boolean
+    removedAssetIds: string[]
+  }> {
+    const projectPath = this.workspace.validateProjectPath(input.projectPath)
+    const canvasPath = this.canvasInProject(projectPath, input.canvasPath)
+    const fingerprint = digest(JSON.stringify({
+      operation: 'removeUnusedAssets',
+      ...input,
+      projectPath,
+      canvasPath,
+    }))
+    return this.mutate(input.mutationId, fingerprint, () => this.serialized(async () => {
+      const project = await this.inspect(projectPath)
+      this.requireCanvas(project, canvasPath)
+      const current = await this.canvases.read(canvasPath)
+      if (current.revision !== input.baseRevision) {
+        throw new RevisionConflictError(current.revision)
+      }
+      const referenced = new Set(current.document.elements.flatMap(element => (
+        element.type === 'image'
+        && element.isDeleted !== true
+        && typeof element.fileId === 'string'
+          ? [element.fileId]
+          : []
+      )))
+      const removedAssetIds = Object.keys(current.document.files)
+        .filter(assetId => !referenced.has(assetId))
+        .sort()
+      const files = Object.fromEntries(
+        Object.entries(current.document.files)
+          .filter(([assetId]) => referenced.has(assetId)),
+      )
+      const canvas = await this.canvases.write(
+        canvasPath,
+        input.baseRevision,
+        `canvas-asset-cleanup:${input.mutationId}`,
+        { ...current.document, files },
+      )
+      return {
+        canvasPath,
+        revision: canvas.revision,
+        changed: canvas.changed,
+        removedAssetIds,
+      }
+    }))
   }
 
   async applyCanvasChanges(input: {
