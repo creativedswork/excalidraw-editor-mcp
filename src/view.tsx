@@ -25,10 +25,12 @@ import {
   canvasContentSummary,
   conflictCopyPath,
   editorStateAfterAction,
+  exportFilename,
   externalUpdateAction,
   reconcileCanvasChange,
   savedCanvasModelContext,
   type EditorSyncState,
+  type ExportFormat,
 } from './view-state.js'
 
 declare global {
@@ -171,6 +173,75 @@ async function embeddedBlob(name: string, mimeType: string, blob: Blob) {
       },
     }],
   })
+}
+
+async function downloadScene(
+  format: ExportFormat,
+  name: string,
+  elements: readonly ExcalidrawElement[],
+  appState: AppState,
+  files: BinaryFiles,
+): Promise<void> {
+  if (format === 'json') {
+    const downloaded = await embeddedText(
+      name,
+      'application/json',
+      serializeAsJSON(elements, appState, files, 'local'),
+    )
+    if (downloaded.isError) throw new Error('Host rejected the canvas download')
+    return
+  }
+  if (format === 'svg') {
+    const svg = await exportToSvg({
+      elements,
+      appState,
+      files,
+      skipInliningFonts: true,
+    })
+    const downloaded = await embeddedText(
+      name,
+      'image/svg+xml',
+      new XMLSerializer().serializeToString(svg),
+    )
+    if (downloaded.isError) throw new Error('Host rejected the canvas download')
+    return
+  }
+  const blob = await exportToBlob({
+    elements,
+    appState,
+    files,
+    mimeType: 'image/png',
+  })
+  const downloaded = await embeddedBlob(name, 'image/png', blob)
+  if (downloaded.isError) throw new Error('Host rejected the canvas download')
+}
+
+async function downloadExportResult(result: CallToolResult): Promise<void> {
+  if (result.isError) throw new Error(errorMessage(result))
+  const content = record(result.structuredContent)
+  const format = content?.format
+  if (
+    typeof content?.canvasPath !== 'string'
+    || typeof content.revision !== 'string'
+    || (format !== 'json' && format !== 'svg' && format !== 'png')
+    || content.filename !== exportFilename(content.canvasPath, format)
+  ) {
+    throw new Error('Export tool returned an invalid request')
+  }
+  const snapshot = await pullSnapshot(content.canvasPath)
+  if (snapshot === undefined || snapshot.revision !== content.revision) {
+    throw new Error('Canvas changed before export; retry export_canvas')
+  }
+  pendingCanvas = snapshot
+  renderCanvas?.(snapshot)
+  const restored = restore(snapshot.document, null, null)
+  await downloadScene(
+    format,
+    content.filename,
+    restored.elements,
+    restored.appState,
+    restored.files,
+  )
 }
 
 function Canvas(): React.JSX.Element {
@@ -493,37 +564,16 @@ function Canvas(): React.JSX.Element {
     }
   }
 
-  const download = async (format: 'json' | 'svg' | 'png'): Promise<void> => {
+  const download = async (format: ExportFormat): Promise<void> => {
     if (api === undefined) return
     setStatus(`Exporting ${format.toUpperCase()}`)
-    const elements = api.getSceneElements()
-    const appState = api.getAppState()
-    const files = api.getFiles()
-    if (format === 'json') {
-      await embeddedText(
-        'excalidraw-m0.excalidraw',
-        'application/json',
-        serializeAsJSON(elements, appState, files, 'local'),
-      )
-    } else if (format === 'svg') {
-      const svg = await exportToSvg({
-        elements,
-        appState,
-        files,
-        skipInliningFonts: true,
-      })
-      await embeddedText(
-        'excalidraw-m0.svg',
-        'image/svg+xml',
-        new XMLSerializer().serializeToString(svg),
-      )
-    } else {
-      await embeddedBlob(
-        'excalidraw-m0.png',
-        'image/png',
-        await exportToBlob({ elements, appState, files, mimeType: 'image/png' }),
-      )
-    }
+    await downloadScene(
+      format,
+      exportFilename(canvas?.canvasPath ?? 'canvas.excalidraw', format),
+      api.getSceneElements(),
+      api.getAppState(),
+      api.getFiles(),
+    )
     setStatus(`${format.toUpperCase()} ready`)
   }
 
@@ -663,7 +713,11 @@ function Canvas(): React.JSX.Element {
 }
 
 app.ontoolresult = result => {
-  void pullCanvas(result).catch(error => {
+  const content = record(result.structuredContent)
+  const action = content?.delivery === 'ui/download-file'
+    ? downloadExportResult(result)
+    : pullCanvas(result)
+  void action.catch(error => {
     const status = document.querySelector<HTMLOutputElement>('[data-m0-status]')
     if (status !== null) {
       status.textContent = error instanceof Error ? error.message : String(error)

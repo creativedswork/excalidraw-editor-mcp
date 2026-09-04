@@ -33,6 +33,7 @@ import {
   type ProjectSummary,
 } from './project-store.js'
 import type { CanvasChange } from './official.js'
+import { exportFilename, type ExportFormat } from './view-state.js'
 
 const RESOURCE_URI = 'ui://excalidraw-editor/app'
 const DSH_WORKSPACE_META_KEY = 'ai.deepseek.dsh/workspace'
@@ -698,6 +699,33 @@ function createServer(): McpServer {
     'Deleted Excalidraw canvas.',
     await (await projectStore(_meta)).deleteCanvas(input),
   ))
+
+  registerAppTool(server, 'export_canvas', {
+    title: 'Export Excalidraw canvas',
+    description: 'Opens the export View and downloads the saved canvas as JSON, SVG, or PNG.',
+    inputSchema: {
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      format: z.enum(['json', 'svg', 'png']),
+    },
+    _meta: {
+      ui: {
+        resourceUri: RESOURCE_URI,
+        visibility: ['model'],
+      },
+    },
+  }, async ({ projectPath, canvasPath, format }, { _meta }) => {
+    const store = await projectStore(_meta)
+    const canvas = await store.openCanvas(projectPath, canvasPath)
+    await bindCanvas(_meta, store, projectPath, canvas.canvasPath)
+    return result('Prepared Excalidraw canvas export.', {
+      canvasPath: canvas.canvasPath,
+      revision: canvas.revision,
+      format,
+      filename: exportFilename(canvas.canvasPath, format as ExportFormat),
+      delivery: 'ui/download-file',
+    })
+  })
 
   registerAppTool(server, 'pull_canvas', {
     title: 'Pull Excalidraw canvas',

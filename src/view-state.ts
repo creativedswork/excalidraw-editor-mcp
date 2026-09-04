@@ -14,6 +14,8 @@ export type EditorAction =
   | 'save-copy'
   | 'copy-saved'
 
+export type ExportFormat = 'json' | 'svg' | 'png'
+
 const PERSISTED_APP_STATE_DEFAULTS = {
   gridSize: 20,
   gridStep: 5,
@@ -121,6 +123,16 @@ export function conflictCopyPath(canvasPath: string, timestamp = Date.now()): st
     /\.excalidraw$/,
     `-copy-${String(timestamp)}.excalidraw`,
   )
+}
+
+export function exportFilename(canvasPath: string, format: ExportFormat): string {
+  const source = canvasPath.split('/').at(-1)?.replace(/\.excalidraw$/, '') ?? ''
+  const safe = source
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
+    || 'canvas'
+  const extension = format === 'json' ? '.excalidraw' : `.${format}`
+  return `${safe.slice(0, 128 - extension.length)}${extension}`
 }
 
 export function savedCanvasModelContext(

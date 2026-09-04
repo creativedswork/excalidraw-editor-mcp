@@ -452,9 +452,11 @@ V1 不允许工具抓取任意网络 URL。AI 创建 image 元素时引用
 | `push_canvas` | 用 baseRevision 和 mutationId 保存完整官方序列化结果 |
 | `save_canvas_copy` | 用 mutationId 将冲突中的草稿保存到新的 Workspace 相对路径 |
 
-只有 `create_project`、`open_project`、`create_canvas` 和 `open_canvas`
-绑定 `ui://excalidraw-editor/app`。工程工具打开主画布；普通检查和 AI 修改
-工具不创建重复 View。
+`create_project`、`open_project`、`create_canvas` 和 `open_canvas`
+绑定 `ui://excalidraw-editor/app`。`export_canvas` 是唯一例外：它也绑定该
+Resource，使已加载的 Browser View 使用官方 Excalidraw SVG/PNG export API，
+再经 Host `ui/download-file` 交付下载。工程工具打开主画布；普通检查、AI
+修改和资源 mutation 工具不创建 View。
 
 ### Session 交接
 
