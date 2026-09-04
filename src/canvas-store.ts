@@ -469,9 +469,22 @@ export class CanvasStore {
     try {
       await handle.writeFile(bytes)
       await handle.sync()
+      const source = await handle.stat()
       await handle.close()
       await link(temporary, target)
-      await this.syncDirectory(dirname(target))
+      await rm(temporary, { force: true })
+
+      const published = await lstat(target)
+      if (published.dev !== source.dev || published.ino !== source.ino) {
+        throw new Error('workspace path changed during atomic create')
+      }
+      if (published.nlink === 2) {
+        await this.replaceAtomic(target, bytes)
+      } else if (published.nlink !== 1) {
+        throw new Error('atomic create produced an unexpected link count')
+      } else {
+        await this.syncDirectory(dirname(target))
+      }
     } finally {
       await handle.close().catch(() => undefined)
       await rm(temporary, { force: true })

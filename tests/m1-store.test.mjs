@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises'
+import fs from 'node:fs'
+import { link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -75,6 +77,44 @@ test('canvas store writes canonical documents and enforces CAS', async (t) => {
     String([first, second].find(result => result.status === 'rejected').reason),
     /revision conflict/,
   )
+})
+
+test('canvas create normalizes a retained publication link without accepting later hardlinks', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'excalidraw-m1-retained-link-')))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const target = join(root, 'designs/demo/main.excalidraw')
+  const retained = join(root, 'retained-publication')
+  const originalRm = fs.promises.rm
+  let retainedPublication = false
+  let store
+
+  fs.promises.rm = async (path, options) => {
+    if (!retainedPublication && String(path).startsWith(`${target}.`)) {
+      await link(path, retained)
+      retainedPublication = true
+    }
+    return originalRm(path, options)
+  }
+  syncBuiltinESMExports()
+  try {
+    const { CanvasStore, SafeWorkspace } = await import(
+      `${storeUrl.href}?retained-link=${String(Date.now())}`
+    )
+    store = new CanvasStore(await SafeWorkspace.open(root))
+    await store.create(
+      'designs/demo/main.excalidraw',
+      'create-with-retained-link',
+      documentWith('initial'),
+    )
+  } finally {
+    fs.promises.rm = originalRm
+    syncBuiltinESMExports()
+  }
+
+  assert.equal(retainedPublication, true)
+  assert.equal((await lstat(target)).nlink, 1)
+  await link(target, join(root, 'user-hardlink.excalidraw'))
+  await assert.rejects(store.read('designs/demo/main.excalidraw'), /regular unlinked file/)
 })
 
 test('mutation retries are idempotent and conflicting reuse is rejected', async (t) => {
