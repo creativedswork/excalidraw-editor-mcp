@@ -40,10 +40,63 @@ async function fixture(t) {
     client,
     workspace,
     meta,
+    created,
     canvasPath: created.structuredContent.canvasPath,
     revision: created.structuredContent.revision,
   }
 }
+
+function modelVisibleJson(response) {
+  const text = response.content.find(content => content.type === 'text')?.text
+  assert.equal(typeof text, 'string')
+  return JSON.parse(text.slice(text.indexOf('\n') + 1))
+}
+
+test('model-visible tool results expose canonical paths and revisions', async (t) => {
+  const state = await fixture(t)
+  const created = modelVisibleJson(state.created)
+  assert.equal(created.project.projectPath, 'designs/m3')
+  assert.equal(created.canvasPath, 'designs/m3/main.excalidraw')
+  assert.equal(created.revision, state.revision)
+
+  const inspectedResponse = await state.client.callTool({
+    name: 'inspect_canvas',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: created.canvasPath,
+      limit: 1,
+    },
+    _meta: state.meta,
+  })
+  const inspected = modelVisibleJson(inspectedResponse)
+  assert.equal(inspected.canvasPath, created.canvasPath)
+  assert.equal(inspected.revision, state.revision)
+
+  const appliedResponse = await state.client.callTool({
+    name: 'apply_canvas_changes',
+    arguments: {
+      projectPath: 'designs/m3',
+      canvasPath: created.canvasPath,
+      baseRevision: inspected.revision,
+      mutationId: 'model-visible-result',
+      changes: [{
+        op: 'set_canvas',
+        patch: { viewBackgroundColor: '#ffffff' },
+      }],
+    },
+    _meta: state.meta,
+  })
+  const applied = modelVisibleJson(appliedResponse)
+  assert.equal(applied.canvasPath, created.canvasPath)
+  assert.match(applied.revision, /^[a-f0-9]{64}$/)
+
+  const tools = await state.client.listTools()
+  const inspectTool = tools.tools.find(tool => tool.name === 'inspect_canvas')
+  assert.match(
+    inspectTool.inputSchema.properties.canvasPath.description,
+    /full workspace-relative canvas path.*under projectPath.*designs\/m3\/main\.excalidraw/i,
+  )
+})
 
 test('apply_canvas_changes is atomic, idempotent, and uses official element invariants', async (t) => {
   const state = await fixture(t)

@@ -66,6 +66,15 @@ function viewHtml(script: string, css: string): string {
 }
 
 const pathSchema = z.string().min(1).max(512)
+const projectPathSchema = pathSchema.describe(
+  'Full workspace-relative project path, for example designs/m3.',
+)
+const canvasPathSchema = pathSchema.describe(
+  'Full workspace-relative canvas path under projectPath, for example designs/m3/main.excalidraw. Never pass only main.excalidraw.',
+)
+const projectRelativeCanvasPathSchema = pathSchema.describe(
+  'Canvas path relative to projectPath, for example main.excalidraw.',
+)
 const revisionSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const mutationSchema = z.string().min(1).max(200)
 const elementReferenceSchema = z.union([
@@ -204,8 +213,8 @@ const canvasChangeSchema = z.discriminatedUnion('op', [
 ])
 const bindingSchema = z.object({
   workspaceRoot: z.string().min(1),
-  projectPath: pathSchema,
-  canvasPath: pathSchema,
+  projectPath: projectPathSchema,
+  canvasPath: canvasPathSchema,
 })
 const bindingsDirectory = process.env.EXCALIDRAW_BINDINGS_DIR
   ?? join(tmpdir(), 'excalidraw-editor-mcp-bindings')
@@ -219,8 +228,12 @@ interface CanvasBinding {
 const bindings = new Map<string, CanvasBinding>()
 
 function result(text: string, structuredContent: Record<string, unknown>): CallToolResult {
+  const json = JSON.stringify(structuredContent)
+  if (Buffer.byteLength(json, 'utf8') > 256 * 1024) {
+    throw new Error('tool result exceeds the 262144-byte model-visible limit')
+  }
   return {
-    content: [{ type: 'text', text }],
+    content: [{ type: 'text', text: `${text}\n${json}` }],
     structuredContent,
   }
 }
@@ -341,6 +354,7 @@ function createServer(): McpServer {
         text: [
           'Use inspect_canvas with filters and cursor pagination before editing.',
           'Prefer one apply_canvas_changes batch with the inspected baseRevision.',
+          'Always reuse the canonical projectPath and full workspace-relative canvasPath returned by tools.',
           'On a revision conflict, inspect again and retry with a new mutationId.',
           'Use replace_canvas only for valid fixed-version fields not modeled by semantic changes.',
           'Open the project or canvas only when the user needs the interactive View.',
@@ -362,9 +376,9 @@ function createServer(): McpServer {
     title: 'Create Excalidraw project',
     description: 'Creates a managed project and opens its default canvas.',
     inputSchema: {
-      projectPath: pathSchema,
+      projectPath: projectPathSchema,
       name: z.string().trim().min(1).max(200),
-      defaultCanvasPath: pathSchema.optional(),
+      defaultCanvasPath: projectRelativeCanvasPathSchema.optional(),
       mutationId: mutationSchema,
     },
     _meta: {
@@ -383,7 +397,7 @@ function createServer(): McpServer {
   registerAppTool(server, 'open_project', {
     title: 'Open Excalidraw project',
     description: 'Opens the default canvas of an existing Excalidraw project.',
-    inputSchema: { projectPath: pathSchema },
+    inputSchema: { projectPath: projectPathSchema },
     _meta: {
       ui: {
         resourceUri: RESOURCE_URI,
@@ -400,7 +414,7 @@ function createServer(): McpServer {
   registerAppTool(server, 'inspect_project', {
     title: 'Inspect Excalidraw project',
     description: 'Returns a bounded project and canvas summary.',
-    inputSchema: { projectPath: pathSchema },
+    inputSchema: { projectPath: projectPathSchema },
     _meta: { ui: { visibility: ['model'] } },
   }, async ({ projectPath }, { _meta }) => result(
     'Inspected Excalidraw project.',
@@ -411,8 +425,8 @@ function createServer(): McpServer {
     title: 'Rename Excalidraw project',
     description: 'Renames a managed project when its project revision is current.',
     inputSchema: {
-      projectPath: pathSchema,
-      newProjectPath: pathSchema,
+      projectPath: projectPathSchema,
+      newProjectPath: projectPathSchema,
       name: z.string().trim().min(1).max(200).optional(),
       baseProjectRevision: revisionSchema,
       mutationId: mutationSchema,
@@ -427,8 +441,8 @@ function createServer(): McpServer {
     title: 'Duplicate Excalidraw project',
     description: 'Copies a managed project when its project revision is current.',
     inputSchema: {
-      projectPath: pathSchema,
-      newProjectPath: pathSchema,
+      projectPath: projectPathSchema,
+      newProjectPath: projectPathSchema,
       name: z.string().trim().min(1).max(200).optional(),
       baseProjectRevision: revisionSchema,
       mutationId: mutationSchema,
@@ -443,8 +457,8 @@ function createServer(): McpServer {
     title: 'Delete Excalidraw project',
     description: 'Deletes a managed project after exact path and revision confirmation.',
     inputSchema: {
-      projectPath: pathSchema,
-      confirmProjectPath: pathSchema,
+      projectPath: projectPathSchema,
+      confirmProjectPath: projectPathSchema,
       baseProjectRevision: revisionSchema,
       mutationId: mutationSchema,
     },
@@ -457,7 +471,7 @@ function createServer(): McpServer {
   registerAppTool(server, 'list_canvases', {
     title: 'List Excalidraw canvases',
     description: 'Lists canvases in one project.',
-    inputSchema: { projectPath: pathSchema },
+    inputSchema: { projectPath: projectPathSchema },
     _meta: { ui: { visibility: ['model'] } },
   }, async ({ projectPath }, { _meta }) => result('Listed Excalidraw canvases.', {
     canvases: await (await projectStore(_meta)).listCanvases(projectPath),
@@ -467,8 +481,8 @@ function createServer(): McpServer {
     title: 'Create Excalidraw canvas',
     description: 'Creates and opens an empty canvas inside one project.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
       baseProjectRevision: revisionSchema,
       mutationId: mutationSchema,
     },
@@ -493,8 +507,8 @@ function createServer(): McpServer {
     title: 'Open Excalidraw canvas',
     description: 'Opens one canvas inside its project.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
     },
     _meta: {
       ui: {
@@ -516,8 +530,8 @@ function createServer(): McpServer {
     title: 'Inspect Excalidraw canvas',
     description: 'Returns filtered, paginated semantic elements and optionally a small standard document.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
       ids: z.array(z.string().min(1).max(128)).max(100).optional(),
       types: z.array(z.string().min(1).max(40)).max(20).optional(),
       text: z.string().max(500).optional(),
@@ -557,8 +571,8 @@ function createServer(): McpServer {
     title: 'Check Excalidraw canvas',
     description: 'Checks that a canvas is a valid bounded standard document.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
     },
     _meta: { ui: { visibility: ['model'] } },
   }, async ({ projectPath, canvasPath }, { _meta }) => result(
@@ -570,8 +584,8 @@ function createServer(): McpServer {
     title: 'Apply Excalidraw canvas changes',
     description: 'Atomically applies semantic element and canvas changes at one base revision.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
       changes: z.array(canvasChangeSchema).min(1).max(200),
@@ -589,8 +603,8 @@ function createServer(): McpServer {
     title: 'Replace Excalidraw canvas',
     description: 'Validates, restores, and atomically replaces one complete standard document.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
       document: canvasDocumentSchema,
@@ -608,9 +622,9 @@ function createServer(): McpServer {
     title: 'Rename Excalidraw canvas',
     description: 'Renames a canvas inside the same managed project.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
-      newCanvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      newCanvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
     },
@@ -624,9 +638,9 @@ function createServer(): McpServer {
     title: 'Duplicate Excalidraw canvas',
     description: 'Copies a canvas inside the same project.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
-      newCanvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      newCanvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
     },
@@ -640,9 +654,9 @@ function createServer(): McpServer {
     title: 'Delete Excalidraw canvas',
     description: 'Deletes a canvas after exact path and revision confirmation.',
     inputSchema: {
-      projectPath: pathSchema,
-      canvasPath: pathSchema,
-      confirmCanvasPath: pathSchema,
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      confirmCanvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
     },
@@ -656,7 +670,7 @@ function createServer(): McpServer {
     title: 'Pull Excalidraw canvas',
     description: 'Returns the bound document when the app revision is stale.',
     inputSchema: {
-      canvasPath: pathSchema,
+      canvasPath: canvasPathSchema,
       currentRevision: revisionSchema.optional(),
     },
     _meta: { ui: { visibility: ['app'] } },
@@ -676,7 +690,7 @@ function createServer(): McpServer {
     title: 'Save Excalidraw canvas',
     description: 'Saves the bound standard document with compare-and-swap.',
     inputSchema: {
-      canvasPath: pathSchema,
+      canvasPath: canvasPathSchema,
       baseRevision: revisionSchema,
       mutationId: mutationSchema,
       document: canvasDocumentSchema,
@@ -697,8 +711,8 @@ function createServer(): McpServer {
     title: 'Save Excalidraw canvas copy',
     description: 'Saves the bound draft as a new canvas in the same project.',
     inputSchema: {
-      canvasPath: pathSchema,
-      newCanvasPath: pathSchema,
+      canvasPath: canvasPathSchema,
+      newCanvasPath: canvasPathSchema,
       mutationId: mutationSchema,
       document: canvasDocumentSchema,
     },
