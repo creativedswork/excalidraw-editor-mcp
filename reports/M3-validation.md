@@ -1,6 +1,6 @@
 # M3 AI 结构化编辑与 Session 交接验证
 
-> 状态：Milestone candidate，等待人工验收
+> 状态：Milestone candidate，runtime storyboard blocked，等待人工验收
 >
 > 验证日期：2026-09-04
 >
@@ -8,18 +8,26 @@
 
 ## 结论
 
-M3 已完成 S1-S4 的产品代码和定向自动化验证：
+M3 S1-S4 产品实现和集中自测已完成：
 
-1. `inspect_canvas` 支持语义过滤、cursor 分页、截断、容器 label 折叠和有界结构返回。
-2. `apply_canvas_changes` 支持原子批量变更、同批 `clientRef`、revision CAS 和 `mutationId` 幂等。
-3. V1 关系操作支持排序、分组、绑定和 Frame 成员变更；删除会修复悬空引用。
-4. `replace_canvas` 执行 schema、大小、引用和官方 restore 校验。
-5. View 仅在 Saved 状态发送一条普通 Ask AI Session 消息；消息携带画布路径、revision、选择和用户文本。
+1. `inspect_canvas` 支持有界语义查询。
+2. `apply_canvas_changes` 支持原子批次、revision CAS 和 `mutationId` 幂等。
+3. V1 关系操作会维护绑定、Frame 和删除引用不变量。
+4. `replace_canvas` 校验并恢复固定版本文档。
+5. Saved View 的 Ask AI 发送一条携带 canvas/revision/selection 的普通 Session 消息。
 
-集中快速自测 8/8 通过，类型检查和生产构建通过。实际 DSH 人机回合未完成：
-隔离 Host 在 `session.create` 阶段重复超时；获准使用原 Host 后，fresh Session
-创建和用户消息写入成功，但当前模型路由在调用 MCP 前返回 provider `1210`
-错误。因此本报告不宣称完成 tool trace、最终画布、完整截图序列或 GIF。
+focused tests 8/8、typecheck、detached build 和 main build 均 PASS。真实 route probe
+也已 PASS：Session `session-cbbbfbb4-7ab2-4ec2-a88a-08a60c674d78` 的实际
+request/header 和 session-title-llm-request 都使用
+`m3-anthropic/deepseek-v4-pro`，真实模型精确返回 `M3_ROUTE_PROBE_OK`。
+旧报告中的 provider `1210` 不是当前最终 blocker。
+
+完整双画布 storyboard 未完成。首次真实 Session 在 `workspace-write` 下创建 canvas
+时，MCP atomic create 的 unlink 被 sandbox 阻止，canvas 留下 `nlink=2` 并被安全检查
+拒绝。清理隔离 Workspace 后，唯一一次 corrected retry 准备在新 Session 使用现有
+`Full access` preset，但 Host 冷启动页面在 30 秒内既未出现已识别 composer，也未出现
+旧 `Choose workspace` 控件，因而在创建 Session 前停止。按 bounded execution 规则
+没有第二次修正或重试。
 
 ## 自动化验证
 
@@ -27,105 +35,126 @@ M3 已完成 S1-S4 的产品代码和定向自动化验证：
 |---|---|---|
 | M3 focused self-test | PASS，8/8，2.96 秒 | `.tmp/m3/m3-quick-self-test.log` |
 | `pnpm typecheck` | PASS | `.tmp/m3/m3-typecheck.log` |
-| detached worktree production build | PASS，commit `2f35ba2` | `.tmp/m3/runtime-build.log` |
-| main checkout production build | PASS，功能 HEAD `2f35ba2` | `.tmp/m3/main-runtime-build.log` |
-| `git diff --check` | PASS | 最终文档提交前复核 |
+| detached production build | PASS，commit `2f35ba2` | `.tmp/m3/runtime-build.log` |
+| main production build | PASS，功能 HEAD `2f35ba2` | `.tmp/m3/main-runtime-build.log` |
+| route probe | PASS，真实模型精确返回 sentinel | `evidence/route-probe.json` |
+| corrected storyboard retry | FAIL，Session 创建前 locator timeout | `evidence/runtime-error.txt` |
 
-集中测试覆盖：
+本次没有修改产品源码，因此没有重跑已经通过的 focused tests、typecheck 或 builds。
 
-- inspect 的 ID/type/text 过滤、cursor 分页、截断和 label 折叠。
-- 九种 add 类型、existing-file image、update/remove/set_canvas 和同批 `clientRef` 绑定。
-- 无效批次零部分写入、stale revision、exact retry 和 mutationId mismatch。
-- reorder、group/ungroup、bind/unbind、add_to_frame/remove_from_frame 和删除引用修复。
-- `replace_canvas` 字段保留、无效引用、超限输入、stale revision 和幂等复用拒绝。
-- Ask AI dirty/conflict 阻断和一条有界 Saved Session 消息。
+## Runtime 结果
 
-## DSH 运行验证
+### Run Identity
 
-### 隔离 Host
+- Host：`http://127.0.0.1:3097/`
+- Host PID：`37490`
+- MCP PID：`41558`
+- Workspace：`.playwright-mcp/m3-runtime-real-20260904/workspace/m3-isolated-workspace`
+- Route Session：`session-cbbbfbb4-7ab2-4ec2-a88a-08a60c674d78`
+- Failed storyboard Session：`session-757009ad-4b03-4c19-9ea3-6522ff0f6e03`
+- Runtime root：`.playwright-mcp/m3-runtime-real-20260904`
 
-隔离 Host `http://127.0.0.1:3096/` 使用 clean `2f35ba2` worktree、独立
-`DSH_HOME`、Workspace 和浏览器 profile。Host 曾达到 HTTP 200，但浏览器记录到：
+### Route Probe
 
-```text
-initial workspace selection failed: SessionCreateError:
-session create failed: internal: signal timed out
-requestfailed:http://127.0.0.1:3096/api/session.create:net::ERR_ABORTED
-```
+结果为 PASS。`route-probe.json` 同时记录 request/header、title request、assistant
+completion 和 turn end；两条路由均为 `m3-anthropic/deepseek-v4-pro`。对应压缩 Session
+log 已复制到 evidence 目录。
 
-随后 `page.reload` 等待 navigation `commit` 超时。按停止条件未继续重试。
+### Storyboard Attempt
 
-### 原 Host fallback
-
-用户批准复用原 Host 和已验证浏览器 profile。该运行不是全新 Host/profile：
-
-- Host：PID `57670`，`http://127.0.0.1:3080/`。
-- Workspace：Three.js MCP 的 `tests/fixtures/m6/workspace`，只允许创建
-  `excalidraw/m3-smoke`。
-- Browser：复用 M2 已验证 profile。
-- M3 MCP：main checkout 在功能 HEAD `2f35ba2` 重新构建后，将子进程
-  PID `17015` 替换为 PID `11695`。
-
-fallback 成功创建 fresh Session
-`session-3ab217b0-b317-40da-9183-01f6c8acb0d9`，并记录完整用户请求。
-模型请求随后在任何 MCP tool call 前结束：
+首次 Session 确实调用了 Excalidraw MCP，但在 `create_project` 后返回：
 
 ```text
-400: {"code":"1210","message":"API 调用参数有误，请检查文档。"}
-code: INVALID_REQUEST
+Error: workspace path is not a regular unlinked file:
+excalidraw/m3-smoke/main.excalidraw
 ```
 
-因此：
+提取 trace 证明该 Session 使用正确模型路由，并记录 create/list/inspect 的准确
+arguments 和 tool result。该 Session 随后的探索不是有效 storyboard。
 
-- 未创建 `excalidraw/m3-smoke`，`default-canvas` 未被访问或修改。
-- 未生成 Excalidraw tool trace 或最终 `.excalidraw` 文件。
-- 只保留请求态截图 `00-create-request.png`，没有将其伪装成完成证据。
-- 不满足至少两帧的编码条件，未生成或发布 GIF。
-- Host PID `57670` 和 M3 MCP PID `11695` 在停止后保持存活，3080 返回 200。
+corrected retry 只改动 gitignored runtime harness：
 
-## 证据
+- 识别当前中文 composer `给智能体发消息`；
+- 停止遗留 turn；
+- 新 Session 选择现有 `Full access` preset；
+- MCP 失败时禁止转入 Bash/Read 诊断；
+- harness 通过 `node --check`。
 
-- focused tests：`.tmp/m3/m3-quick-self-test.log`
-- typecheck：`.tmp/m3/m3-typecheck.log`
-- detached build：`.tmp/m3/runtime-build.log`
-- main build：`.tmp/m3/main-runtime-build.log`
-- 3096 browser 事件：`.playwright-mcp/m3-runtime/evidence/browser-events.log`
-- 3096 runtime 错误：`.playwright-mcp/m3-runtime/evidence/runtime-error.txt`
-- 3080 请求态截图：`.playwright-mcp/gif-frames-m3-3080/00-create-request.png`
-- 3080 Session log：`~/.dsh/sessions/--Users-bytedanceo-Workspace-DeepSeekSpace-threejs-editor-mcp-tests-fixtures-m6-workspace--/session-3ab217b0-b317-40da-9183-01f6c8acb0d9/session.jsonl.zstd`
+执行时 `connectFreshWorkspace()` 在以下 locator 等待 30 秒后超时：
+
+```text
+[aria-label="Choose workspace"], [aria-label="选择工作区"]
+```
+
+该 run 没有创建新 Session、没有发送模型请求，也没有写入 fixture。随后只读检查显示
+页面最终可见中文 composer 和 `m3-isolated-workspace`，说明当前未解决的是 Host
+readiness/定位时序，而不是模型路由或产品 MCP 返回。
+
+## Evidence
+
+根目录：`.playwright-mcp/m3-runtime-real-20260904/evidence`
+
+- `route-probe.json`
+- `route-probe-browser.json`
+- `route-probe-session.jsonl.zstd`
+- `failed-storyboard-mcp-trace.jsonl`
+- `runtime-error.txt`
+- `runtime-results.partial.json`
+- `browser-events.log`
+- `corrected-retry-blocker.png`
+- `failed-attempt/`：首次失败时的原始诊断文件
 
 关键 SHA-256：
 
-- focused tests：`a2240f713ce9aada32391cac7ad5e9157b40bcd22293f3065d06bd34eaa86096`
-- typecheck：`bd4ac3e3757b1d09e49b10675e5ae4c90e9de0d4576c99079d9dfd0067b3e523`
-- detached build：`0a7993a3339deee6a0b3c04defaf274817550e448d115b9cf8373eaee8ff95de`
-- main build：`ed0ff1d566549c6141ed97c0687ca7c80b951de45241410735b6bb6086662a31`
-- 3080 请求态截图：`87a91504f5bc16a1b2613c0a2ffb59d036b6a95fe22a1a152d02d0d900eb4dc7`
-- 3080 Session log：`5fb8256b9dc94cb94203db60eb2f877f07c65345eacdc63f7927b9d1bc2d663e`
+- route probe：`dd7c4374606c9a3cb9f03529638c63815a166627478f82bed9d28f3326f6b072`
+- route Session：`eed206394a9fa7b07095fee5daaf658df05a6980cacdcbbb71567a558f789f36`
+- failed MCP trace：`061d709ca990e0d4eeec3311e6cb64e87938fe2738fab4791d04d11c34319468`
+- corrected error：`c992d4e3eaf7363187ff4dc0a5a36c7287ba5e3938d4941050ed640adb4405f7`
+- blocker screenshot：`d3e02e657a4ecdf4b7660e355560a78a1a987abf28e6311370311e1c21a7d79f`
+
+没有最终 `.excalidraw` 文件、3-6 张同 run 语义截图或 GIF。storyboard 未开始，
+不能把 route probe、旧失败 Session 和 blocker 截图拼接成一个证据 run；
+`record-browser-gif` encoder 因少于两个同 run 合格 frame 而未执行。GIF 未发布或推送。
+
+## Cleanup
+
+- 失败的 `excalidraw/m3-smoke`、`excalidraw/m3-fresh-test` 和诊断 test files
+  已从隔离 Workspace 清理。
+- 隔离 Workspace 当前为空。
+- `default-canvas` 未访问或修改。
+- Host PID `37490` 和 MCP PID `41558` 保持存活，3097 返回 HTTP 200。
+
+## Acceptance Steps
+
+1. 复核 S1-S4 commits：`8b7065b`、`c888eb1`、`fafca9b`、`2f35ba2`。
+2. 复核本报告的 8/8 focused tests、typecheck 和两次 build PASS 证据。
+3. 打开 `http://127.0.0.1:3097/`，在 `m3-isolated-workspace` 新建 Session，
+   将访问模式切换为 `Full access`。
+4. 创建 `excalidraw/m3-smoke`、`main.excalidraw` 和 `deployment.excalidraw`；
+   用一个 batch 创建 API、Database 和 bound arrow，并打开 main View。
+5. 人工移动节点、Save、保留选择并点击 Ask AI；确认 Agent 先
+   `inspect_canvas`，再用一个 `apply_canvas_changes` batch 添加 Queue 和调整布局。
+6. 确认同一 View instance 的 revision 前进且 surviving selection 保留；打开
+   deployment View，人工编辑并 Save。
+7. 保留同一 run 的精确 tool trace/Session log、两份最终画布和 3-6 张语义截图，
+   编码本地 GIF，并目视检查编码后的 GIF。
+
+预期结果：两个 canvas 均为 Saved；main 包含三个节点和有效关系；AI 更新不替换
+View、不丢失 surviving selection；证据同源且不包含 secret。
+
+失败判定：batch 部分写入、CAS/幂等或引用修复失效、dirty Ask AI 可发送、Agent
+未按 inspect/apply 顺序执行、AI 更新替换 View 或丢失选择、双画布/证据/GIF 缺失，
+或 Workspace/composer readiness 再次阻断新 Session。
 
 ## Release Hardening
 
-以下检查未在 M3 开发阶段执行：
-
-- 全仓测试、全量 lint、覆盖率扩展和独立 Review。
+- 全仓测试、全量 lint、覆盖率扩展、完整生产门禁和独立 Review。
 - 大文档、复杂元素组合、多 View、长时间 polling 和断线耐久性。
-- 使用可工作的原 Host 模型路由重跑一次完整人机双画布回合，保留 tool trace、
-  最终画布、完整截图序列，并编码和目视核验 GIF。
+- 修复 Host 冷启动 readiness locator 后，重跑完整双画布真实模型 flow，并补齐
+  tool trace、最终画布、同 run 截图和目视核验 GIF。
 
-运行时补验必须继续使用隔离工程，不能访问 `default-canvas`。当前 provider `1210`
-错误解除前，不应重复浏览器运行。
+## Exclusions And Remote Status
 
-## 人工验收
-
-1. 检查 S1-S4 的四个本地 commit 和本报告中的 8/8 集中测试结果。
-2. 在 Saved 画布执行 Ask AI，确认只生成一条普通 Session 消息，且 dirty/conflict
-   状态无法发送。
-3. 使用可工作的模型路由创建 `excalidraw/m3-smoke` 双画布，观察模型先 inspect，
-   再执行一个 `apply_canvas_changes` 批次。
-4. 人工移动并保存一个节点，再由 AI 增加节点；确认 iframe 实例不替换、revision
-   前进且 surviving selection 保留。
-5. 打开第二张画布，人工编辑并保存；保留 tool trace、两份最终画布、截图和 GIF。
-
-失败判定：批次发生部分写入、stale revision 被覆盖、mutationId 不同输入被复用、
-删除后存在悬空引用、`replace_canvas` 接受无效或超限文档、dirty Ask AI 可发送、
-clean AI 更新替换 iframe 或丢失 surviving selection，或运行时仍在 MCP 调用前失败。
+- 未修改产品源码，未开始 M4，未修改其他仓库。
+- 未访问 `default-canvas`。
+- 未执行 push、PR、amend、rebase、发布或任何其他远端操作。
