@@ -1,0 +1,10 @@
+- id: mcp-apps
+  config:
+    maxBodyBytes: 33554432
+    servers:
+      - serverName: excalidraw
+        transport: stdio
+        command: /absolute/path/to/excalidraw-mcp-install/node_modules/.bin/excalidraw-editor-mcp
+        args: []
+        cwd: /absolute/path/to/excalidraw-mcp-install
+        forwardWorkspace: true

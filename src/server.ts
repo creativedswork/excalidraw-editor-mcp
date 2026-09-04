@@ -38,26 +38,22 @@ import { exportFilename, type ExportFormat } from './view-state.js'
 const RESOURCE_URI = 'ui://excalidraw-editor/app'
 const DSH_WORKSPACE_META_KEY = 'ai.deepseek.dsh/workspace'
 const DSH_SESSION_META_KEY = 'ai.deepseek.dsh/session'
-const FONT_ORIGIN = 'https://esm.sh'
-const FONT_PATH =
-  `${FONT_ORIGIN}/@excalidraw/excalidraw@0.18.0/dist/prod/fonts/`
 const CSP = {
   connectDomains: [] as string[],
-  resourceDomains: [FONT_ORIGIN],
+  resourceDomains: [] as string[],
   frameDomains: [] as string[],
   baseUriDomains: [] as string[],
 }
 
 function viewHtml(script: string, css: string): string {
-  const selfContainedCss = css.replaceAll('./fonts/', FONT_PATH)
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Excalidraw M0</title>
-  <style>${selfContainedCss.replaceAll('</style', '<\\/style')}</style>
+  <title>Excalidraw Editor</title>
+  <style>${css.replaceAll('</style', '<\\/style')}</style>
 </head>
 <body>
   <div id="root"></div>

@@ -1,105 +1,102 @@
 # excalidraw-editor-mcp
 
-An Excalidraw canvas delivered as an MCP App for DeepSeek Harness and
-`@creative-dswork/dsh-uni-editor`.
+[中文](README.zh-CN.md)
 
-Status: M1 project and canvas lifecycle implementation.
+An Excalidraw editor delivered as an MCP App for DeepSeek Harness (DSH). It
+uses the official `@excalidraw/excalidraw` component and stores standard
+`.excalidraw` files in the active DSH Workspace.
 
-- [`docs/DESIGN.md`](docs/DESIGN.md)
-- [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md)
+## Features
 
-The implementation embeds the official
-`@excalidraw/excalidraw` package instead of maintaining a fork of the full
-Excalidraw application.
+- Managed multi-canvas projects and discovered standalone canvases.
+- Semantic inspect and atomic revision-checked edits.
+- Interactive inline/fullscreen editing with save, reload, conflict recovery,
+  and Ask AI.
+- Bounded local PNG, JPEG, GIF, and WebP assets. Network images are rejected.
+- JSON, SVG, and PNG downloads through the MCP Host.
+- Self-contained App HTML, including all Excalidraw fonts; no runtime CDN is
+  required.
 
-## Prerequisites
+## Requirements
 
-- Node.js `^22.19.0` or `>=24.0.0`.
-- `pnpm`; each checkout pins its required version in `packageManager`.
-- Local checkouts of `deepseek-harness`, `dsh-uni-editor`, and this repository.
-- A configured DSH model credential with available credit. For the default
-  provider, set `DEEPSEEK_API_KEY` or configure it through DSH before starting.
+- Node.js `>=22.19.0`
+- pnpm `10.25.0`
+- DSH Web with `@creative-dswork/dsh-uni-editor`
 
-## Build
-
-Set the three checkout paths, then install and build each component:
+## Build And Pack
 
 ```bash
-export DSH_ROOT=/absolute/path/to/deepseek-harness
-export UNI_EDITOR_ROOT=/absolute/path/to/dsh-uni-editor
-export EXCALIDRAW_MCP_ROOT=/absolute/path/to/excalidraw-editor-mcp
-
-cd "$EXCALIDRAW_MCP_ROOT"
 pnpm install --frozen-lockfile
-pnpm build
-
-cd "$UNI_EDITOR_ROOT"
-pnpm install --frozen-lockfile
-pnpm build
-
-cd "$DSH_ROOT"
-pnpm install --frozen-lockfile
-pnpm run build
+pnpm run release:check
+pnpm pack --pack-destination .tmp
 ```
+
+The package intentionally remains `private: true` at version `0.0.0`. Before
+publishing, a maintainer must choose the release version, remove the private
+guard, inspect the tarball, and confirm third-party notices.
 
 ## Configure DSH
 
-Install the local Uni Editor bundle into the Web profile:
+Install the tarball into a directory and point DSH at its executable:
 
 ```bash
-export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-cd "$DSH_ROOT"
-DSH_HOME="$DSH_HOME" pnpm dsh plugin --profile web add "$UNI_EDITOR_ROOT"
+mkdir -p /absolute/path/to/excalidraw-mcp-install
+cd /absolute/path/to/excalidraw-mcp-install
+pnpm init
+pnpm add /absolute/path/to/excalidraw-editor-mcp-0.0.0.tgz
 ```
 
-Edit `$DSH_HOME/profiles/web/cordis.patch.yml`. This is the configuration
-shape used by this workspace:
+Copy [`examples/dsh/cordis.patch.yml`](examples/dsh/cordis.patch.yml) into the
+Web profile configuration and replace the placeholder paths. The essential
+server entry is:
 
 ```yaml
 - id: mcp-apps
   config:
-    maxBodyBytes: 16777216
+    maxBodyBytes: 33554432
     servers:
       - serverName: excalidraw
         transport: stdio
-        command: node
-        args:
-          - /absolute/path/to/excalidraw-editor-mcp/dist/server.js
-        cwd: /absolute/path/to/excalidraw-editor-mcp
+        command: /absolute/path/to/excalidraw-mcp-install/node_modules/.bin/excalidraw-editor-mcp
+        args: []
+        cwd: /absolute/path/to/excalidraw-mcp-install
         forwardWorkspace: true
 ```
 
-`forwardWorkspace` is required for model-visible project and canvas tools.
-The server accepts the Workspace only from trusted DSH request metadata,
-never from a model-visible filesystem-path argument.
+`forwardWorkspace` is required. The server accepts the Workspace only from
+trusted DSH request metadata. `maxBodyBytes` allows the Host to carry the
+self-contained App Resource and embedded fonts.
 
-`maxBodyBytes: 16777216` is also required. The current bundled App Resource is
-about 8.19 MiB; a smaller limit such as `2097152` lets tools succeed but makes
-the linked view fail with `MCP App unavailable` and
-`MCP App resource is too large`. Change the value in
-`$DSH_HOME/profiles/web/cordis.patch.yml`; a running DSH profile reloads valid
-config edits automatically. Re-open the Session after HMR. Restart only that
-DSH process if the profile does not reload.
-
-Validate the composed configuration, then start DSH:
+Validate and start the Web profile:
 
 ```bash
-cd "$DSH_ROOT"
-DSH_HOME="$DSH_HOME" pnpm dsh web --dump-config
-DSH_HOME="$DSH_HOME" pnpm dsh web --host 127.0.0.1 --port 3080 --no-open
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}" pnpm dsh web --dump-config
+DSH_HOME="${DSH_HOME:-$HOME/.dsh}" pnpm dsh web --host 127.0.0.1 --port 3080 --no-open
 ```
 
-Open `http://127.0.0.1:3080/`, choose the Workspace that should contain the
-Excalidraw projects, and start a Session. A model-visible tool is named with
-the configured server prefix, for example
+Open `http://127.0.0.1:3080/`, select a Workspace, and start a Session. Tools
+are exposed with the configured prefix, such as
 `mcp__excalidraw__create_project`.
 
-For a published DSH installation, use the equivalent commands:
+## Safety Limits
+
+- Asset source: regular file inside the active Workspace only; no URL,
+  symlink, or hardlink.
+- Asset types: PNG, JPEG, GIF, or WebP with a valid image header.
+- Per asset: 1 MiB; decoded assets per canvas: 2 MiB.
+- Dimensions: at most 8192 by 8192 and 32 million pixels.
+- Canonical canvas document: 4 MiB.
+- Model-visible tool result: 256 KiB.
+- All writes use revision checks; rejected mutations preserve the old file.
+
+## Development
 
 ```bash
-dsh plugin --profile web add "$UNI_EDITOR_ROOT"
-dsh web
+pnpm typecheck
+pnpm test
+pnpm run release:check
 ```
 
-Full M1 user acceptance cases, expected files, and failure criteria are in
-[`reports/M1-validation.md`](reports/M1-validation.md).
+Architecture and milestone details are in
+[`docs/DESIGN.md`](docs/DESIGN.md) and
+[`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md).

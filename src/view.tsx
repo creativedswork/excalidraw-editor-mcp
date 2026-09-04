@@ -35,7 +35,6 @@ import {
 
 declare global {
   interface Window {
-    EXCALIDRAW_ASSET_PATH: string
     __EXCALIDRAW_M0__?: {
       elementCount: () => number
       selectedIds: () => string[]
@@ -50,11 +49,8 @@ declare global {
   }
 }
 
-window.EXCALIDRAW_ASSET_PATH =
-  'https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/'
-
 const app = new App(
-  { name: 'Excalidraw Editor M0', version: '0.0.0' },
+  { name: 'Excalidraw Editor', version: '0.0.0' },
   { availableDisplayModes: ['inline', 'fullscreen'] },
   { strict: true },
 )

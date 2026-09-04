@@ -28,6 +28,7 @@ test('stdio server exposes M1 tools and the bundled MCP App resource', async () 
   await client.connect(new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
+    maxBufferSize: 32 * 1024 * 1024,
   }))
 
   try {
@@ -55,7 +56,7 @@ test('stdio server exposes M1 tools and the bundled MCP App resource', async () 
 
     const readme = await readFile(readmePath, 'utf8')
     const configuredLimit = Number(readme.match(/maxBodyBytes:\s*(\d+)/)?.[1])
-    assert.equal(configuredLimit, 16 * 1024 * 1024)
+    assert.equal(configuredLimit, 32 * 1024 * 1024)
     assert.ok(Buffer.byteLength(resource.contents[0]?.text ?? '', 'utf8') <= configuredLimit)
   } finally {
     await client.close()

@@ -3,6 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "description": "An Excalidraw canvas delivered as an MCP App",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "mcp-apps",
+    "excalidraw",
+    "editor",
+    "deepseek"
+  ],
   "type": "module",
   "packageManager": "pnpm@10.25.0",
   "engines": {
@@ -13,13 +21,19 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "examples",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit",
-    "build": "pnpm run clean && tsdown",
-    "test": "pnpm run build && node --test tests/*.test.mjs"
+    "build": "pnpm run clean && tsdown && node scripts/embed-fonts.mjs",
+    "test": "pnpm run build && node --test --test-concurrency=1 tests/*.test.mjs",
+    "release:check": "pnpm run typecheck && pnpm test",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.0",

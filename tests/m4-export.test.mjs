@@ -32,6 +32,7 @@ test('export_canvas binds the Browser View and returns a bounded download reques
   await client.connect(new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
+    maxBufferSize: 32 * 1024 * 1024,
   }))
   t.after(() => client.close())
   const meta = {
