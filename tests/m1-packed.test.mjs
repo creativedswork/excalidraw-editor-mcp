@@ -11,6 +11,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 const execute = promisify(execFile)
 const root = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
+const stdioDefaultMaxBufferSize = 10 * 1024 * 1024
 
 test('packed install is complete and starts without external App assets', async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), 'excalidraw-m1-packed-'))
@@ -50,7 +51,6 @@ test('packed install is complete and starts without external App assets', async 
   })
   await client.connect(new StdioClientTransport({
     command: join(sandbox, 'node_modules', '.bin', 'excalidraw-editor-mcp'),
-    maxBufferSize: 32 * 1024 * 1024,
   }))
   t.after(() => client.close())
   const listed = await client.listTools()
@@ -67,4 +67,13 @@ test('packed install is complete and starts without external App assets', async 
   })
   assert.ok((html.match(/data:font\/woff2;base64/g) ?? []).length > 0)
   assert.doesNotMatch(html, /\.\/fonts\/[^"'`()\s]+\.woff2/)
+  const wireLine = `${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result: resource,
+  })}\n`
+  assert.ok(
+    Buffer.byteLength(wireLine) < stdioDefaultMaxBufferSize,
+    'resources/read response must fit the MCP SDK 1.30 default stdio buffer',
+  )
 })

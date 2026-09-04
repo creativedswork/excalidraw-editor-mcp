@@ -8,6 +8,32 @@ const excalidrawCss = join(
   'index.css',
 )
 
+function retainUiFonts() {
+  return {
+    name: 'retain-excalidraw-ui-fonts',
+    transform(code: string, id: string) {
+      if (!id.includes('@excalidraw/excalidraw/dist/prod/')) return null
+      if (!code.includes('init(CJK_HAND_DRAWN_FALLBACK_FONT, ...XiaolaiFontFaces);')) {
+        return null
+      }
+
+      const transformed = code
+        .replace(
+          'return [CJK_HAND_DRAWN_FALLBACK_FONT, WINDOWS_EMOJI_FALLBACK_FONT];',
+          'return [WINDOWS_EMOJI_FALLBACK_FONT];',
+        )
+        .replace('    init("Liberation Sans", ...LiberationFontFaces);\n', '')
+        .replace('    init("Virgil", ...VirgilFontFaces);\n', '')
+        .replace('    init(CJK_HAND_DRAWN_FALLBACK_FONT, ...XiaolaiFontFaces);\n', '')
+
+      if (transformed === code) {
+        throw new Error('Excalidraw font registration layout changed')
+      }
+      return { code: transformed, map: null }
+    },
+  }
+}
+
 export default defineConfig([
   {
     name: 'excalidraw-editor-mcp/canvas-store',
@@ -88,14 +114,17 @@ export default defineConfig([
       alwaysBundle: () => true,
       onlyBundle: false,
     },
-    plugins: [{
-      name: 'resolve-excalidraw-css',
-      resolveId(id) {
-        return id === '@excalidraw/excalidraw/index.css'
-          ? excalidrawCss
-          : null
+    plugins: [
+      retainUiFonts(),
+      {
+        name: 'resolve-excalidraw-css',
+        resolveId(id) {
+          return id === '@excalidraw/excalidraw/index.css'
+            ? excalidrawCss
+            : null
+        },
       },
-    }],
+    ],
     outputOptions: {
       entryFileNames: 'view.js',
       assetFileNames: '[name][extname]',
