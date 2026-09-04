@@ -1,0 +1,216 @@
+# M4 资源、导出与发布验证
+
+> 状态：`AWAITING_ACCEPTANCE`
+>
+> 验证日期：2026-09-05
+>
+> 功能 HEAD：`ada73c0`
+
+## 结论
+
+M4 S1-S4 已形成等待人工验收的功能候选。
+
+1. Workspace 内 PNG/JPEG/GIF/WebP 可受限导入，内容 SHA-256 作为稳定 asset ID。
+2. URL、越界、symlink、hardlink、格式和资源限额在写入前拒绝。
+3. 未引用资源清理保留所有 live image element 正在使用的资源。
+4. JSON/SVG/PNG 由 Browser View 使用官方 Excalidraw API 渲染，并通过
+   `ui/download-file` 交给 Host。
+5. 双语文档、许可证、第三方声明、DSH 示例配置、CI、packed install 和
+   `release:check` 已补齐。
+6. 同一 tarball 已接入 fresh DSH Web，完成 desktop/mobile、离线资源、真实模型工具
+   调用、下载和 teardown 验证。
+
+本报告证明 M4 功能候选满足里程碑退出条件，不代表 M0-M4 累计独立 Review 或
+Release Hardening 已完成。
+
+## Commit 范围
+
+| Commit | 说明 |
+|---|---|
+| `63638bb` | `feat: add bounded canvas asset lifecycle` |
+| `a230bdc` | `feat: add browser-backed canvas export` |
+| `d2954c7` | `build: prepare distributable package` |
+| `ada73c0` | `fix: bound packed app resource size` |
+
+S4 只新增本报告并更新 `docs/status/M4.md`；runtime harness、tarball、安装树、截图、
+下载和日志保留在 gitignored `.tmp/m4/`。
+
+## Release Gate
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `pnpm run release:check` | PASS，43/43 | `.tmp/m4/release-check-fix.log` |
+| default SDK 1.30 packed read | PASS，1/1 | `.tmp/m4/fix-packed-test.log` |
+| packed App Resource wire line | PASS，8,626,188 bytes，低于默认 10 MiB | packed test |
+| real Host View response | HTTP 200，8,626,317 bytes | `evidence/view-probe-*` |
+| isolated tarball install | PASS | `.tmp/m4/install/` |
+
+`release:check` 包含 typecheck、生产 build 和 43 项串行测试。Build 仍报告依赖中的既有
+`EMPTY_IMPORT_META` warning；没有 build 或测试失败。
+
+Candidate：
+
+- commit：`ada73c03686f5cb3eb1bfe167e7040c26088a3ab`
+- tarball：`.tmp/m4/candidate/excalidraw-editor-mcp-0.0.0.tgz`
+- tarball size：6,313,240 bytes
+- tarball SHA-256：
+  `906ab396b55a70a1ba14bef4dc13102c66288c4677a7cd3a8540e36e243c87c9`
+- package guard：`version: 0.0.0`、`private: true`
+
+首次 S3 candidate 将 235 个字体文件全部内联，导致 MCP `resources/read` JSON line
+超过 SDK 1.30 默认 10 MiB stdio buffer。`ada73c0` 仅保留当前 UI 使用的字体注册和
+payload，并在 packed test 中直接按默认 transport 和真实 wire size 回归。
+
+## Final Run Identity
+
+- DSH origin：`http://127.0.0.1:3104`
+- provider/model：`m4-anthropic/deepseek-v4-pro`
+- candidate tarball SHA-256：
+  `906ab396b55a70a1ba14bef4dc13102c66288c4677a7cd3a8540e36e243c87c9`
+- run ID：`1788550560409-15063`
+- workspace：`.tmp/m4/final-runtime/workspace`
+- project：`excalidraw/m4-smoke-1788550560409-15063`
+- canvas：`excalidraw/m4-smoke-1788550560409-15063/main.excalidraw`
+- View instance：`35ebec63-beac-40b3-96fa-ad941aa98392`
+- final revision：
+  `76362b56bc4d51163b273de3c5aa87885c72555e8539dc89329a3719cb8611bc`
+
+desktop、mobile、资源导入、清理、超限拒绝和三种下载均来自同一 fresh Host、page、
+Workspace、View instance 和 candidate。
+
+## Runtime 断言
+
+### Desktop And Mobile
+
+- desktop viewport：1440x1000；View root：748x320。
+- mobile viewport：390x844；View root：262x320。
+- 两者均为 inline、Clean，revision 和 instance ID 完全一致。
+- desktop/mobile 截图均可见 Excalidraw 工具栏、画布和 DSH Chat。
+
+### Offline Resources And Fonts
+
+- 首次导航前即阻断全部非 loopback HTTP(S) 请求。
+- 外部资源请求数为 0。
+- 4 条字体规则全部为 embedded data URL。
+- `document.fonts.status` 为 `loaded`；实际使用的 Assistant 和 Excalifont 已加载。
+- 未使用的 FontFace 保持 `unloaded` 是浏览器按需加载行为；最终断言只拒绝
+  `error`，不把 `unloaded` 误判为产品失败。
+
+### Asset Round Trip And Cleanup
+
+- `pixel.png` 原始 68 bytes 经模型调用 `add_canvas_asset` 导入。
+- 稳定 asset ID：
+  `431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460`。
+- 模型创建一个 live image element，其 `fileId` 指向该 asset。
+- `unused.gif` 导入后由 `remove_unused_assets` 删除。
+- 最终文档只保留一个 image element 和一个 asset；解码后的 PNG bytes 与源文件一致。
+
+### Limit Rejection
+
+- 真实模型只调用一次 `add_canvas_asset` 导入 `large.png`。
+- Server 返回 `asset exceeds 1048576 bytes`，模型按约定返回
+  `M4_OVERSIZE_REJECTED`，没有重试或其他 mutation。
+- 拒绝前后 revision 和文件 SHA-256 均保持
+  `76362b56bc4d51163b273de3c5aa87885c72555e8539dc89329a3719cb8611bc`。
+
+### Downloads
+
+| 格式 | 文件名 | Bytes | SHA-256 |
+|---|---|---:|---|
+| JSON | `main.excalidraw` | 1,492 | `3ee9e9a72b0235959d65aa3bf1b3dfc78793c7555477a29d3b1a05da901dfdfc` |
+| SVG | `main.svg` | 714 | `6f8b238e1e712c07837cfce13e55c47f0318c2caa3b497d2ba6388cc0f154020` |
+| PNG | `main.png` | 1,715 | `bd388d9c1b212f618cf9f28d8285c535ee42d7f5b755d81f75b31788fa1fd766` |
+
+三次 `export_canvas` 均经真实 MCP App `tools/call` 和 `ui/download-file` 完成。
+文件分别通过 JSON、SVG 和 PNG 类型检查；PNG 为 260x180 RGBA。
+
+## Evidence
+
+根目录：`.tmp/m4/final-runtime/`
+
+| Artifact | 用途 |
+|---|---|
+| `evidence/runtime-results.json` | 同 run 状态、字体、离线、资源、限额和下载断言 |
+| `evidence/tool-trace.txt` | 真实模型工具顺序、错误和完成 sentinel |
+| `evidence/browser-events.log` | MCP App View/tool/download 请求 |
+| `frames/desktop.png` | desktop 真实页面 |
+| `frames/mobile.png` | mobile 真实页面 |
+| `evidence/downloads/` | JSON/SVG/PNG Host 下载 |
+| `evidence/view-probe-response.html` | packed App Resource Host 响应 |
+| `evidence/teardown.txt` | Host、MCP、Browser 和端口清理 |
+
+关键 SHA-256：
+
+- runtime results：
+  `48662abaf97d75b96ec855c0a04c8063f053102a57426f562bcd4781d337a4b8`
+- tool trace：
+  `4954c9417073f1a932ade4f59976d9e5bdd0b00715a08262c9b7a3758dbd0f9c`
+- desktop：
+  `bc04d12e71c1a4dbb2ad5255421e10d3a444d7e27e8c1f2b11c0a098b04c833c`
+- mobile：
+  `d115a6b6851d0f962ca2e68e8188a80a5ba02dcec895b02ebe6419473dc8ddb9`
+- View response：
+  `edb19ca631aaa66b751c890e5ae10c3c8f397126b1d4d3ac4d479971e4c57b44`
+
+失败尝试隔离在 `evidence/attempt-*`。最终 PASS 不复用失败 run 的 page、project 或
+View identity。
+
+## Cleanup
+
+- M4 Host process group `91548` 已退出。
+- 3104 无 TCP listener，HTTP probe 返回 connection refused / `000`。
+- packed MCP、`runtime.mjs` 和 final browser profile 均无残留进程。
+- 旧 3080/3094/3097 和其他历史实例不属于 M4 ownership，未修改。
+
+## DSH 配置与启动
+
+1. 从 candidate 安装：
+
+   ```bash
+   pnpm add /absolute/path/to/excalidraw-editor-mcp-0.0.0.tgz
+   ```
+
+2. 在 Web profile 合并 `examples/dsh/cordis.patch.yml`，将 `command` 和 `cwd`
+   替换为 packed install 的绝对路径，并保持 `forwardWorkspace: true`。
+3. 启动 DSH Web：
+
+   ```bash
+   pnpm dsh --profile web --host 127.0.0.1 --port 3104 --no-open
+   ```
+
+4. 在 DSH 选择 Workspace、新建 Session，并要求模型使用 `excalidraw` MCP 创建或
+   打开画布。View 会以内嵌 Canvas 形式出现在 Chat。
+
+完整配置、工具和安全边界见 `README.md`、`README.zh-CN.md` 与
+`examples/dsh/cordis.patch.yml`。
+
+## Acceptance Steps
+
+1. 复核四个 M4 commit、candidate SHA-256 和 43/43 release gate。
+2. 查看 desktop/mobile 截图，确认同一画布在两种 viewport 下可见且没有 UI 重叠。
+3. 对照 `runtime-results.json` 检查同一 instance/revision、离线字体和资源 round trip。
+4. 对照 `tool-trace.txt` 检查导入、live 引用、清理、超限单次拒绝和三个 export。
+5. 打开 `evidence/downloads/`，确认 JSON/SVG/PNG 文件名、格式和内容。
+6. 查看 `evidence/teardown.txt`，确认 3104、packed MCP 和 Browser 无残留。
+
+预期结果：画布 desktop/mobile 均为 Clean；live PNG 原字节保留，unused GIF 删除；
+超限导入不改变 revision；三种文件均由 Host 下载；离线无外部资源请求；teardown
+完整。
+
+失败判定：资源越界或超限仍写盘、live 资源被误删、导出文件为空或类型错误、View 依赖
+外网、desktop/mobile 身份漂移，或 M4 Host/MCP/Browser/3104 listener 残留。
+
+## Release Hardening
+
+- M0-M4 累计 diff 的独立代码审查和额外覆盖。
+- 完整跨 provider、跨版本、长时间运行和多 View 并发矩阵。
+- 最终版本号、公开发布内容、许可证清单和发布渠道确认。
+
+这些项目只有在用户验收 M4 并明确授权后才开始。
+
+## Exclusions And Remote Status
+
+- 未实现网络图片、AI 图片生成、CRDT 或多人协作。
+- 未修改 DeepSeek Harness Agent Loop 或其他仓库。
+- 未执行累计独立 Review 或 Release Hardening。
+- 未执行 npm publish、push、PR、amend、rebase 或其他远端操作。
