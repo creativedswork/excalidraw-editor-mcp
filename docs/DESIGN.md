@@ -297,6 +297,7 @@ Conflict -> SavingCopy -> Clean
 | 画布状态 | 官方 UI 修改背景、网格及可持久化属性 | `set_canvas` | 覆盖 |
 | 文件兼容 | 官方 load/restore/serialize | `inspect_canvas` + `replace_canvas` | 覆盖固定版本可恢复的数据 |
 | 导出 | 官方导出界面，经 Host 下载 | `export_canvas` | `.excalidraw`、SVG、PNG |
+| 视觉检查 | 人工查看 Browser View | `capture_canvas` | 有界 PNG + 文本裁剪诊断 |
 | Library | 官方组件具备 API，但属于独立资产模型 | 不暴露 | V1 排除 |
 | embeddable/iframe | 受 Sandbox、CSP 和外链策略影响 | 不暴露 | V1 排除 |
 | Magic Frame / 内建 AI | 依赖外部生成服务 | 不暴露 | V1 排除 |
@@ -354,6 +355,7 @@ Excalidraw 产品的在线服务和瞬时 UI 控制不承诺完备。
 | `duplicate_canvas` | 复制画布并生成独立 revision | 新 canvas summary |
 | `delete_canvas` | 删除画布；要求 revision 和 `confirmCanvasPath` | 删除摘要 |
 | `export_canvas` | 导出 `.excalidraw`、SVG 或 PNG 到 Workspace 或用户下载 | 产物路径或下载资源 |
+| `capture_canvas` | 从已打开且 revision 精确匹配的 Browser View 捕获画布 | 标准 MCP PNG、摘要和文本裁剪诊断 |
 
 ### `apply_canvas_changes` 操作协议
 
@@ -451,12 +453,36 @@ V1 不允许工具抓取任意网络 URL。AI 创建 image 元素时引用
 | `pull_canvas` | 按 canvasPath 读取完整文档，未变化时只返回 revision |
 | `push_canvas` | 用 baseRevision 和 mutationId 保存完整官方序列化结果 |
 | `save_canvas_copy` | 用 mutationId 将冲突中的草稿保存到新的 Workspace 相对路径 |
+| `report_canvas_capture` | 向同一 Session 的待处理 Harness 请求提交 PNG 和诊断 |
 
 `create_project`、`open_project`、`create_canvas` 和 `open_canvas`
 绑定 `ui://excalidraw-editor/app`。`export_canvas` 是唯一例外：它也绑定该
 Resource，使已加载的 Browser View 使用官方 Excalidraw SVG/PNG export API，
 再经 Host `ui/download-file` 交付下载。工程工具打开主画布；普通检查、AI
 修改和资源 mutation 工具不创建 View。
+
+### Canvas Visual Harness
+
+`capture_canvas` 复用已经打开的 MCP App View，不创建第二套 renderer：
+
+1. Server 校验当前 Session 已绑定目标工程、画布和 saved revision，并为
+   `sessionId + connectionGeneration` 创建一个 15 秒待处理请求；
+2. View 的下一次 `pull_canvas` 只有在上报同一 canvas path 和 revision 时才收到
+   capture command；
+3. View 等待字体加载，使用官方 `exportToBlob` 渲染纯画布 PNG，并用 Browser
+   Canvas 2D text metrics 生成文本宽度和裁剪诊断；
+4. `report_canvas_capture` 只接受同一 owner、command、工程、画布和 revision 的结果；
+5. Server 校验 PNG signature、IHDR 尺寸、SHA-256 和限额，再向调用方返回标准 MCP
+   image content 与有界文本摘要。
+
+每个 owner 同时最多一个请求。PNG 宽高均不超过 1024，base64 字符串不超过
+512 KiB，文本诊断最多 100 条。Harness 不捕获 DSH Chat、Host DOM、鼠标键盘或
+其他应用状态。
+
+模型是否能直接检查 PNG 取决于 provider 声明的输入模态。支持图像输入的模型接收
+标准 MCP image content；不支持图像输入的模型会收到 Host 的降级提示，但仍能使用
+`storedWidth`、`measuredWidth`、`overflow` 和 `clipped` 诊断。后者只能证明这些
+结构化检查结果，不能证明模型检查过像素。
 
 ### Session 交接
 
@@ -485,6 +511,8 @@ State: saved
 - Server 只访问调用 Session 固定 Workspace 下的受管工程文件、
   `.excalidraw` 文件和显式选择的本地图片。
 - app-only 调用不接收任意文件路径；它使用已注册的 `canvasPath`。
+- Harness 请求和回报绑定同一 Session owner、连接 generation、canvas path 和 saved
+  revision；过期、跨连接或 revision 漂移的证据全部拒绝。
 - 所有输入经 Zod 校验，元素数、文本长度、图片和总文档大小有硬上限。
 - View 继续运行在 `dsh-uni-editor` 的不同源双 iframe 和 CSP 下。
 - 不启用任意脚本、外部链接自动打开或网络图片抓取。
@@ -501,6 +529,7 @@ State: saved
 | 写入中断 | 临时文件不成为主文件；下次读取仍得到旧 revision |
 | MCP 调用超时后重试 | 相同 mutationId 返回第一次提交结果，不重复应用 |
 | AI patch 非法 | 整批拒绝，不产生部分 revision |
+| Harness View 不存在或 revision 不一致 | 超时或拒绝；不返回其他 View 的证据 |
 | 文件超过限额 | 明确报告上限，不截断或丢弃元素 |
 | 删除发现工程 | 拒绝；只能逐张删除明确指定且 revision 匹配的画布 |
 
@@ -542,6 +571,8 @@ excalidraw-editor-mcp/
 - 当前固定版本可恢复、但语义 patch 尚未覆盖的字段可通过 `replace_canvas`
   导入；常规编辑不依赖完整 JSON。
 - 画布可重命名、复制、安全删除，并导出 `.excalidraw`、SVG 和 PNG。
+- AI 可对 exact saved revision 调用 `capture_canvas`，获得 Browser 渲染 PNG 和文本
+  裁剪诊断；非视觉模型的图片降级必须明确可见。
 - clean View 自动接收 AI revision；dirty View 不被覆盖并进入可操作冲突状态。
 - revision 冲突、非法路径、超限文件和非法 patch 不造成数据丢失。
 - 产物是标准 `.excalidraw` 文件，可由官方 Excalidraw 打开。
@@ -576,6 +607,7 @@ excalidraw-editor-mcp/
 | 超时重试重复创建元素 | mutationId 幂等表 + 同批 clientRef | 相同调用只产生一个 revision |
 | 完整文档接口挤占上下文 | 默认使用分页语义检查和 patch；replace 仅作逃生口 | 大画布主流程不传输完整 JSON |
 | 工程删除误伤普通目录 | 只有带有效 manifest 的受管工程支持目录级变更 | 发现工程的目录级写操作全部拒绝 |
+| 语义检查无法证明视觉结果 | Browser View 生成 revision-bound PNG 和文本诊断 | owner/revision 不匹配时拒绝；公式裁剪 Case 闭环 |
 
 ## 待确认
 

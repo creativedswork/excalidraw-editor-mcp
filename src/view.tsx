@@ -5,6 +5,7 @@ import {
   Excalidraw,
   exportToBlob,
   exportToSvg,
+  FONT_FAMILY,
   restore,
   serializeAsJSON,
 } from '@excalidraw/excalidraw'
@@ -64,6 +65,15 @@ interface CanvasSnapshot {
   document: CanvasDocument
 }
 
+interface CanvasCaptureCommand {
+  commandId: string
+  canvasPath: string
+  revision: string
+  maxWidth: number
+  maxHeight: number
+  expiresAt: string
+}
+
 function normalizedCanvasDocument(document: CanvasDocument): CanvasDocument {
   const restored = restore(document, null, null)
   return JSON.parse(serializeAsJSON(
@@ -76,6 +86,7 @@ function normalizedCanvasDocument(document: CanvasDocument): CanvasDocument {
 
 let pendingCanvas: CanvasSnapshot | undefined
 let renderCanvas: ((snapshot: CanvasSnapshot) => void) | undefined
+let runCanvasCapture: ((command: CanvasCaptureCommand) => void) | undefined
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -115,6 +126,22 @@ function snapshotFromResult(
   }
 }
 
+function captureCommandFromResult(result: CallToolResult): CanvasCaptureCommand | undefined {
+  const capture = record(record(result.structuredContent)?.capture)
+  if (capture === undefined) return undefined
+  if (
+    typeof capture.commandId !== 'string'
+    || typeof capture.canvasPath !== 'string'
+    || typeof capture.revision !== 'string'
+    || typeof capture.maxWidth !== 'number'
+    || typeof capture.maxHeight !== 'number'
+    || typeof capture.expiresAt !== 'string'
+  ) {
+    throw new Error('Canvas tool returned an invalid capture command')
+  }
+  return capture as unknown as CanvasCaptureCommand
+}
+
 async function pullSnapshot(
   canvasPath: string,
   currentRevision?: string,
@@ -127,6 +154,8 @@ async function pullSnapshot(
     },
   })
   const content = record(pulled.structuredContent)
+  const capture = captureCommandFromResult(pulled)
+  if (capture !== undefined) runCanvasCapture?.(capture)
   if (!pulled.isError && content?.changed === false) return undefined
   return snapshotFromResult(pulled, canvasPath)
 }
@@ -240,6 +269,67 @@ async function downloadExportResult(result: CallToolResult): Promise<void> {
   )
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (
+    bytes.length < 24
+    || bytes[0] !== 137
+    || bytes[1] !== 80
+    || bytes[2] !== 78
+    || bytes[3] !== 71
+  ) {
+    throw new Error('Excalidraw renderer did not return a PNG')
+  }
+  return {
+    width: view.getUint32(16),
+    height: view.getUint32(20),
+  }
+}
+
+function fontString(element: Extract<ExcalidrawElement, { type: 'text' }>): string {
+  const family = Object.entries(FONT_FAMILY)
+    .find(([, value]) => value === element.fontFamily)?.[0] ?? 'Segoe UI Emoji'
+  const fallbacks = element.fontFamily === FONT_FAMILY.Excalifont
+    ? ', Xiaolai, Segoe UI Emoji'
+    : ', Segoe UI Emoji'
+  return `${element.fontSize}px ${family}${fallbacks}`
+}
+
+function textLayoutDiagnostics(elements: readonly ExcalidrawElement[]) {
+  const context = document.createElement('canvas').getContext('2d')
+  if (context === null) throw new Error('Canvas text measurement is unavailable')
+  const textElements = elements.filter(
+    (element): element is Extract<ExcalidrawElement, { type: 'text' }> => (
+      element.type === 'text' && !element.isDeleted
+    ),
+  )
+  const diagnostics = textElements.slice(0, 100).map(element => {
+    context.font = fontString(element)
+    const measuredWidth = Math.max(
+      0,
+      ...element.text.split('\n').map(line => context.measureText(line).width),
+    )
+    const overflow = Math.max(0, measuredWidth - element.width)
+    return {
+      elementId: element.id,
+      storedWidth: Math.round(element.width * 100) / 100,
+      measuredWidth: Math.round(measuredWidth * 100) / 100,
+      overflow: Math.round(overflow * 100) / 100,
+      clipped: element.containerId === null && element.autoResize && overflow > 0.5,
+    }
+  })
+  return {
+    textDiagnostics: diagnostics,
+    truncatedDiagnostics: textElements.length > diagnostics.length,
+  }
+}
+
 function Canvas(): React.JSX.Element {
   const [api, setApi] = useState<ExcalidrawImperativeAPI>()
   const [displayMode, setDisplayMode] = useState('inline')
@@ -257,6 +347,7 @@ function Canvas(): React.JSX.Element {
   const settleFrame = useRef<number>()
   const instanceId = useRef(crypto.randomUUID())
   const modelContextRevision = useRef<string>()
+  const handledCaptureIds = useRef(new Set<string>())
   const setEditorState = (
     next: EditorSyncState | ((current: EditorSyncState) => EditorSyncState),
   ): void => {
@@ -348,6 +439,88 @@ function Canvas(): React.JSX.Element {
       delete window.__EXCALIDRAW_M0__
     }
   }, [api, displayMode, revision, syncState])
+
+  useEffect(() => {
+    if (api === undefined || canvas === undefined) return
+    runCanvasCapture = command => {
+      if (handledCaptureIds.current.has(command.commandId)) return
+      handledCaptureIds.current.add(command.commandId)
+      void (async () => {
+        try {
+          if (
+            command.canvasPath !== canvas.canvasPath
+            || command.revision !== baseRevision.current
+            || syncStateRef.current !== 'Clean'
+            || Date.now() > Date.parse(command.expiresAt)
+          ) {
+            throw new Error('Canvas View is not clean at the requested saved revision')
+          }
+          await document.fonts.ready
+          const elements = api.getSceneElements()
+          const blob = await exportToBlob({
+            elements,
+            appState: api.getAppState(),
+            files: api.getFiles(),
+            mimeType: 'image/png',
+            getDimensions: (width: number, height: number) => {
+              const scale = Math.min(
+                command.maxWidth / width,
+                command.maxHeight / height,
+                1,
+              )
+              return {
+                width: Math.max(1, Math.round(width * scale)),
+                height: Math.max(1, Math.round(height * scale)),
+                scale,
+              }
+            },
+          })
+          const bytes = new Uint8Array(await blob.arrayBuffer())
+          const data = bytesToBase64(bytes)
+          if (data.length > 512 * 1024) {
+            throw new Error('Canvas Harness PNG exceeds the 524288-byte limit')
+          }
+          const digest = Array.from(
+            new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+            byte => byte.toString(16).padStart(2, '0'),
+          ).join('')
+          const reported = await app.callServerTool({
+            name: 'report_canvas_capture',
+            arguments: {
+              commandId: command.commandId,
+              outcome: {
+                status: 'succeeded',
+                evidence: {
+                  evidenceId: crypto.randomUUID(),
+                  digest,
+                  mimeType: 'image/png',
+                  data,
+                  ...pngDimensions(bytes),
+                  capturedAt: new Date().toISOString(),
+                  ...textLayoutDiagnostics(elements),
+                },
+              },
+            },
+          })
+          if (reported.isError) throw new Error(errorMessage(reported))
+          setStatus('Canvas captured for AI')
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const reported = await app.callServerTool({
+            name: 'report_canvas_capture',
+            arguments: {
+              commandId: command.commandId,
+              outcome: { status: 'failed', message },
+            },
+          })
+          setStatus(reported.isError ? errorMessage(reported) : message)
+        }
+      })()
+    }
+    return () => {
+      runCanvasCapture = undefined
+    }
+  }, [api, canvas?.canvasPath])
 
   const onChange = (
     elements: readonly ExcalidrawElement[],

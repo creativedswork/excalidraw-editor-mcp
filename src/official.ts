@@ -574,10 +574,31 @@ export function applyOfficialCanvasChanges(
         )]
       : []
   ))
-  const created = convertToExcalidrawElements(
+  const explicitTextDimensions = new Map(
+    changes.flatMap(change => (
+      change.op === 'add'
+      && change.element.type === 'text'
+      && (change.element.width !== undefined || change.element.height !== undefined)
+        ? [[clientRefMap[change.clientRef], {
+            width: change.element.width,
+            height: change.element.height,
+          }] as const]
+        : []
+    )),
+  )
+  const created = (convertToExcalidrawElements(
     skeletons as never,
     { regenerateIds: false },
-  ) as OfficialElement[]
+  ) as OfficialElement[]).map(element => {
+    const dimensions = explicitTextDimensions.get(element.id)
+    return element.type === 'text' && dimensions !== undefined
+      ? {
+          ...element,
+          ...(dimensions.width === undefined ? {} : { width: dimensions.width }),
+          ...(dimensions.height === undefined ? {} : { height: dimensions.height }),
+        }
+      : element
+  }) as OfficialElement[]
   let elements = restoreElements(
     [...restored.elements, ...created],
     null,

@@ -13,6 +13,8 @@
 - 在 inline/fullscreen View 中编辑、保存、重载、处理冲突和 Ask AI。
 - 有界导入 Workspace 内的 PNG、JPEG、GIF 和 WebP；拒绝网络图片。
 - 通过 MCP Host 下载 JSON、SVG 和 PNG。
+- 基于 saved revision 从 Browser View 捕获标准 MCP PNG 和文本裁剪诊断，供 AI
+  验证。
 - App HTML 和 Excalidraw 字体完全自包含，运行时不依赖 CDN。
 
 ## 环境要求
@@ -72,6 +74,18 @@ DSH_HOME="${DSH_HOME:-$HOME/.dsh}" pnpm dsh web --host 127.0.0.1 --port 3080 --n
 打开 `http://127.0.0.1:3080/`，选择 Workspace 并创建 Session。工具名会带配置的
 Server 前缀，例如 `mcp__excalidraw__create_project`。
 
+## AI 视觉验证
+
+编辑后保持画布 View 打开，并使用精确的 saved revision 调用
+`capture_canvas`。View 通过 Excalidraw 官方 `exportToBlob` API 渲染画布并返回：
+
+- 标准 MCP `image/png` content block；
+- 图片尺寸、SHA-256 和捕获时间；
+- 有界文本诊断，包括保存宽度、浏览器测量宽度、溢出量和裁剪状态。
+
+支持图像输入的模型可以直接检查 PNG。若当前模型未声明图像输入，DSH 会明确报告该
+限制，模型仍可使用文本诊断；此时结果不能证明模型检查过像素。
+
 ## 安全限额
 
 - 图片必须是当前 Workspace 内的普通文件；拒绝 URL、symlink 和 hardlink。
@@ -80,6 +94,8 @@ Server 前缀，例如 `mcp__excalidraw__create_project`。
 - 宽高均不超过 8192，像素总量不超过 3200 万。
 - canonical 画布文档不超过 4 MiB。
 - 模型可见工具结果不超过 256 KiB。
+- Harness capture 宽高均不超过 1024，base64 图片数据不超过 512 KiB，文本诊断
+  不超过 100 条；每个 Session 连接同时只能有一个请求，15 秒超时。
 - 所有写入均校验 revision；拒绝的 mutation 不改变旧文件。
 
 ## 开发检查

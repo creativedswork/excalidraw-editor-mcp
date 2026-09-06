@@ -167,6 +167,10 @@
 - Workspace 外图片路径和网络 URL 被拒绝。
 - 未引用图片清理不会删除仍被任意 image 元素使用的文件。
 - JSON/SVG/PNG 导出在 Sandbox 中可下载。
+- `capture_canvas` 只接受同一 Session owner、canvas path 和 saved revision 的
+  Browser View 证据。
+- 公式文本先报告 `clipped=true`，修正尺寸后在新 revision 报告
+  `clipped=false`。
 - Server teardown 后没有残留进程或 View 调用。
 
 ### 实现
@@ -174,6 +178,10 @@
 - 实现 `add_canvas_asset` 和 `remove_unused_assets`。
 - 实现 `export_canvas`，复用 Excalidraw 官方导出能力和 Host
   `ui/download-file`。
+- 实现 `capture_canvas` 与 app-only `report_canvas_capture`，复用官方
+  `exportToBlob`，返回标准 MCP PNG 和有界文本布局诊断。
+- 保留 `add` 操作显式提供的 standalone text 宽高，避免 Node text-metrics shim
+  覆盖 Agent 的布局意图。
 - 完成 README、中文 README、LICENSE、第三方声明和示例配置。
 - 增加 CI、packed install 和 release checks。
 
@@ -182,6 +190,8 @@
 - `pnpm run release:check`
 - 从 npm pack tarball 安装并接入真实 DSH Web
 - desktop/mobile Browser 回归
+- 真实 DSH Session 中连续执行窄公式 capture、扩宽和再次 capture；核对 exact
+  revision、诊断、图片交付状态和无 Bash
 - 断网启动验证自包含字体和静态资源
 - 发布前人工确认版本、包内容和第三方许可证
 
@@ -226,4 +236,5 @@ scripts/build-view.mjs
 2. 实施并提交 M0。
 3. 提交 M0 运行证据，由用户确认是否继续。
 4. 依次实施 M1、M2、M3；每个里程碑单独验收和提交。
-5. M4 完成 release hardening；未经明确要求不发布 npm 或创建公开 GitHub 仓库。
+5. M4 功能候选通过验收后，等待用户决定是否进入统一 Release Hardening；未经明确
+   授权不执行累计 Review、发布 npm 或创建公开 GitHub 仓库。

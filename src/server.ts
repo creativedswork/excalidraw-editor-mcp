@@ -74,6 +74,49 @@ const projectRelativeCanvasPathSchema = pathSchema.describe(
 )
 const revisionSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const mutationSchema = z.string().min(1).max(200)
+const captureCommandSchema = z.object({
+  commandId: z.string().uuid(),
+  canvasPath: canvasPathSchema,
+  revision: revisionSchema,
+  maxWidth: z.number().int().min(64).max(1_024),
+  maxHeight: z.number().int().min(64).max(1_024),
+  expiresAt: z.string().datetime(),
+})
+const textLayoutDiagnosticSchema = z.object({
+  elementId: z.string().min(1).max(128),
+  storedWidth: z.number().nonnegative(),
+  measuredWidth: z.number().nonnegative(),
+  overflow: z.number().nonnegative(),
+  clipped: z.boolean(),
+})
+const canvasCaptureEvidenceSchema = z.object({
+  evidenceId: z.string().uuid(),
+  digest: revisionSchema,
+  mimeType: z.literal('image/png'),
+  data: z.string()
+    .min(12)
+    .max(512 * 1024)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  width: z.number().int().positive().max(1_024),
+  height: z.number().int().positive().max(1_024),
+  capturedAt: z.string().datetime(),
+  textDiagnostics: z.array(textLayoutDiagnosticSchema).max(100),
+  truncatedDiagnostics: z.boolean(),
+})
+const canvasCaptureOutcomeSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('succeeded'),
+    evidence: canvasCaptureEvidenceSchema,
+  }),
+  z.object({
+    status: z.literal('failed'),
+    message: z.string().min(1).max(500),
+  }),
+])
+const canvasCaptureReportSchema = z.object({
+  commandId: z.string().uuid(),
+  outcome: canvasCaptureOutcomeSchema,
+})
 const elementReferenceSchema = z.union([
   z.object({ elementId: z.string().min(1).max(128) }).strict(),
   z.object({ clientRef: z.string().min(1).max(128) }).strict(),
@@ -216,6 +259,7 @@ const bindingSchema = z.object({
 const bindingsDirectory = process.env.EXCALIDRAW_BINDINGS_DIR
   ?? join(tmpdir(), 'excalidraw-editor-mcp-bindings')
 const stores = new Map<string, Promise<ProjectStore>>()
+const CAPTURE_TIMEOUT_MS = 15_000
 interface CanvasBinding {
   store: ProjectStore
   projectPath: string
@@ -223,6 +267,18 @@ interface CanvasBinding {
 }
 
 const bindings = new Map<string, CanvasBinding>()
+type CanvasCaptureEvidence = z.infer<typeof canvasCaptureEvidenceSchema>
+interface PendingCanvasCapture {
+  command: z.infer<typeof captureCommandSchema>
+  projectPath: string
+  ownerKey: string
+  resolve: (evidence: CanvasCaptureEvidence) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  abort?: () => void
+}
+const pendingCanvasCaptures = new Map<string, PendingCanvasCapture>()
 
 function result(text: string, structuredContent: Record<string, unknown>): CallToolResult {
   const json = JSON.stringify(structuredContent)
@@ -248,6 +304,117 @@ function sessionId(meta: Record<string, unknown> | undefined): string | undefine
     meta?.[DSH_SESSION_META_KEY],
   )
   return parsed.success ? parsed.data.sessionId : undefined
+}
+
+function sessionOwnerKey(meta: Record<string, unknown> | undefined): string {
+  const parsed = z.object({
+    sessionId: z.string().min(1),
+    connectionGeneration: z.string().min(1),
+  }).safeParse(meta?.[DSH_SESSION_META_KEY])
+  if (!parsed.success) throw new Error('current DSH session owner is unavailable')
+  return `${parsed.data.sessionId}\0${parsed.data.connectionGeneration}`
+}
+
+function finishCanvasCapture(
+  pending: PendingCanvasCapture,
+  outcome: { evidence: CanvasCaptureEvidence } | { error: Error },
+): void {
+  if (pendingCanvasCaptures.get(pending.ownerKey) !== pending) return
+  pendingCanvasCaptures.delete(pending.ownerKey)
+  clearTimeout(pending.timer)
+  if (pending.signal !== undefined && pending.abort !== undefined) {
+    pending.signal.removeEventListener('abort', pending.abort)
+  }
+  if ('evidence' in outcome) pending.resolve(outcome.evidence)
+  else pending.reject(outcome.error)
+}
+
+function requestCanvasCapture(
+  meta: Record<string, unknown> | undefined,
+  projectPath: string,
+  canvasPath: string,
+  revision: string,
+  maxWidth: number,
+  maxHeight: number,
+  signal?: AbortSignal,
+): Promise<CanvasCaptureEvidence> {
+  const ownerKey = sessionOwnerKey(meta)
+  if (pendingCanvasCaptures.has(ownerKey)) {
+    throw new Error('one Canvas Harness capture is already pending for this Session')
+  }
+  return new Promise((resolve, reject) => {
+    const command = {
+      commandId: randomUUID(),
+      canvasPath,
+      revision,
+      maxWidth,
+      maxHeight,
+      expiresAt: new Date(Date.now() + CAPTURE_TIMEOUT_MS).toISOString(),
+    }
+    const pending: PendingCanvasCapture = {
+      command,
+      projectPath,
+      ownerKey,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        finishCanvasCapture(pending, {
+          error: new Error('Canvas Harness capture timed out; open the canvas View and retry'),
+        })
+      }, CAPTURE_TIMEOUT_MS),
+      signal,
+    }
+    pending.abort = () => finishCanvasCapture(pending, {
+      error: new Error('Canvas Harness capture was cancelled'),
+    })
+    pendingCanvasCaptures.set(ownerKey, pending)
+    if (signal?.aborted === true) pending.abort()
+    else if (signal !== undefined) signal.addEventListener('abort', pending.abort, { once: true })
+  })
+}
+
+function pendingCanvasCapture(
+  meta: Record<string, unknown> | undefined,
+  canvasPath: string,
+  revision: string | undefined,
+): z.infer<typeof captureCommandSchema> | undefined {
+  if (revision === undefined) return undefined
+  let ownerKey: string
+  try {
+    ownerKey = sessionOwnerKey(meta)
+  } catch {
+    return undefined
+  }
+  const pending = pendingCanvasCaptures.get(ownerKey)
+  return pending?.command.canvasPath === canvasPath
+    && pending.command.revision === revision
+    ? pending.command
+    : undefined
+}
+
+function validateCanvasCaptureEvidence(
+  command: z.infer<typeof captureCommandSchema>,
+  evidence: CanvasCaptureEvidence,
+): CanvasCaptureEvidence {
+  const bytes = Buffer.from(evidence.data, 'base64')
+  const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+  if (bytes.length < 24 || !bytes.subarray(0, 8).equals(pngSignature)) {
+    throw new Error('Canvas Harness evidence is not a PNG')
+  }
+  const width = bytes.readUInt32BE(16)
+  const height = bytes.readUInt32BE(20)
+  if (
+    width !== evidence.width
+    || height !== evidence.height
+    || width > command.maxWidth
+    || height > command.maxHeight
+  ) {
+    throw new Error('Canvas Harness evidence dimensions are invalid')
+  }
+  if (createHash('sha256').update(bytes).digest('hex') !== evidence.digest) {
+    throw new Error('Canvas Harness evidence digest is invalid')
+  }
+  return evidence
 }
 
 async function storeForWorkspace(cwd: string): Promise<ProjectStore> {
@@ -354,6 +521,7 @@ function createServer(): McpServer {
           'Always reuse the canonical projectPath and full workspace-relative canvasPath returned by tools.',
           'On a revision conflict, inspect again and retry with a new mutationId.',
           'Use replace_canvas only for valid fixed-version fields not modeled by semantic changes.',
+          'After visual edits, use capture_canvas on the exact saved revision and fix any clipped text.',
           'Open the project or canvas only when the user needs the interactive View.',
         ].join('\n'),
       },
@@ -723,6 +891,72 @@ function createServer(): McpServer {
     })
   })
 
+  registerAppTool(server, 'capture_canvas', {
+    title: 'Capture Excalidraw canvas',
+    description: [
+      'Returns a standard MCP PNG rendered by the open Browser View plus text clipping diagnostics.',
+      'Image-capable models can inspect the PNG; other models can still use the diagnostics.',
+      'The View must already be open on the same saved canvas revision.',
+    ].join(' '),
+    inputSchema: {
+      projectPath: projectPathSchema,
+      canvasPath: canvasPathSchema,
+      revision: revisionSchema.describe('Exact saved revision returned by inspect or mutation tools.'),
+      maxWidth: z.number().int().min(64).max(1_024).default(1_024),
+      maxHeight: z.number().int().min(64).max(1_024).default(1_024),
+    },
+    _meta: { ui: { visibility: ['model'] } },
+  }, async ({
+    projectPath,
+    canvasPath,
+    revision,
+    maxWidth,
+    maxHeight,
+  }, { _meta, signal }) => {
+    const binding = await boundCanvas(_meta, canvasPath)
+    if (binding.projectPath !== projectPath) {
+      throw new Error('canvas is not bound to this project in the current app session')
+    }
+    const canvas = await binding.store.openCanvas(projectPath, canvasPath)
+    if (canvas.revision !== revision) {
+      throw new Error(`revision conflict: expected ${revision}, current ${canvas.revision}`)
+    }
+    const evidence = await requestCanvasCapture(
+      _meta,
+      projectPath,
+      canvasPath,
+      revision,
+      maxWidth,
+      maxHeight,
+      signal,
+    )
+    const summary = {
+      canvasPath,
+      revision,
+      evidenceId: evidence.evidenceId,
+      digest: evidence.digest,
+      width: evidence.width,
+      height: evidence.height,
+      capturedAt: evidence.capturedAt,
+      textDiagnostics: evidence.textDiagnostics,
+      truncatedDiagnostics: evidence.truncatedDiagnostics,
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Captured Excalidraw canvas.\n${JSON.stringify(summary)}`,
+        },
+        {
+          type: 'image',
+          data: evidence.data,
+          mimeType: evidence.mimeType,
+        },
+      ],
+      structuredContent: summary,
+    }
+  })
+
   registerAppTool(server, 'pull_canvas', {
     title: 'Pull Excalidraw canvas',
     description: 'Returns the bound document when the app revision is stale.',
@@ -735,12 +969,58 @@ function createServer(): McpServer {
     const binding = await boundCanvas(_meta, canvasPath)
     const canvas = await binding.store.openCanvas(binding.projectPath, canvasPath)
     const changed = canvas.revision !== currentRevision
+    const capture = pendingCanvasCapture(_meta, canvasPath, currentRevision)
     return result(changed ? 'Canvas snapshot returned.' : 'Canvas is current.', {
       canvasPath,
       changed,
       revision: canvas.revision,
+      ...(capture === undefined ? {} : { capture }),
       ...(changed ? { document: canvas.document } : {}),
     })
+  })
+
+  registerAppTool(server, 'report_canvas_capture', {
+    title: 'Report Excalidraw canvas capture',
+    description: 'Settles one pending Canvas Harness capture from the bound Browser View.',
+    inputSchema: canvasCaptureReportSchema,
+    _meta: { ui: { visibility: ['app'] } },
+  }, async ({ commandId, outcome }, { _meta }) => {
+    const ownerKey = sessionOwnerKey(_meta)
+    const pending = pendingCanvasCaptures.get(ownerKey)
+    if (pending === undefined || pending.command.commandId !== commandId) {
+      throw new Error('Canvas Harness capture command is not pending for this Session')
+    }
+    try {
+      if (Date.now() > Date.parse(pending.command.expiresAt)) {
+        throw new Error('Canvas Harness capture command expired')
+      }
+      const binding = await boundCanvas(_meta, pending.command.canvasPath)
+      if (binding.projectPath !== pending.projectPath) {
+        throw new Error('Canvas Harness project binding changed')
+      }
+      const canvas = await binding.store.openCanvas(
+        pending.projectPath,
+        pending.command.canvasPath,
+      )
+      if (canvas.revision !== pending.command.revision) {
+        throw new Error('Canvas changed while the Harness capture was running')
+      }
+      if (outcome.status === 'failed') {
+        throw new Error(`Canvas View capture failed: ${outcome.message}`)
+      }
+      const evidence = validateCanvasCaptureEvidence(pending.command, outcome.evidence)
+      finishCanvasCapture(pending, { evidence })
+      return result('Accepted Excalidraw canvas capture.', {
+        accepted: true,
+        commandId,
+        evidenceId: evidence.evidenceId,
+      })
+    } catch (error) {
+      finishCanvasCapture(pending, {
+        error: error instanceof Error ? error : new Error(String(error)),
+      })
+      throw error
+    }
   })
 
   registerAppTool(server, 'push_canvas', {

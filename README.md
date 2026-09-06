@@ -14,6 +14,8 @@ uses the official `@excalidraw/excalidraw` component and stores standard
   and Ask AI.
 - Bounded local PNG, JPEG, GIF, and WebP assets. Network images are rejected.
 - JSON, SVG, and PNG downloads through the MCP Host.
+- Revision-bound Browser captures with a standard MCP PNG and text clipping
+  diagnostics for AI verification.
 - Self-contained App HTML, including all Excalidraw fonts; no runtime CDN is
   required.
 
@@ -78,6 +80,22 @@ Open `http://127.0.0.1:3080/`, select a Workspace, and start a Session. Tools
 are exposed with the configured prefix, such as
 `mcp__excalidraw__create_project`.
 
+## AI Visual Verification
+
+After an edit, keep the canvas View open and call `capture_canvas` with the
+exact saved revision. The View renders the canvas with Excalidraw's official
+`exportToBlob` API and returns:
+
+- a standard MCP `image/png` content block;
+- the image dimensions, SHA-256 digest, and capture time;
+- bounded text diagnostics with stored width, measured width, overflow, and
+  clipping state.
+
+Image-capable models can inspect the PNG directly. If the selected model does
+not declare image input, DSH reports that limitation and the model can still
+use the text diagnostics. In that case, the result does not prove that the
+model inspected the pixels.
+
 ## Safety Limits
 
 - Asset source: regular file inside the active Workspace only; no URL,
@@ -87,6 +105,9 @@ are exposed with the configured prefix, such as
 - Dimensions: at most 8192 by 8192 and 32 million pixels.
 - Canonical canvas document: 4 MiB.
 - Model-visible tool result: 256 KiB.
+- Harness capture: at most 1024 by 1024, 512 KiB of base64 image data, and 100
+  text diagnostics; one pending capture per Session connection with a
+  15-second timeout.
 - All writes use revision checks; rejected mutations preserve the old file.
 
 ## Development
