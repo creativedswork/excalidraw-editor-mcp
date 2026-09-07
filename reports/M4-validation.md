@@ -4,7 +4,7 @@
 >
 > 验证日期：2026-09-07
 >
-> S5 基线：`788a932`
+> S5 基线：`4000463`
 
 ## 结论
 
@@ -22,6 +22,9 @@ M4 S1-S5 已形成等待人工验收的功能候选。
 7. `capture_canvas` 将 exact saved revision 交给已打开的 Browser View，通过官方
    `exportToBlob` 返回标准 MCP PNG 和文本裁剪诊断；公式裁剪 Case 已由真实 DSH
    Session 自主发现并修复。
+8. App 通过 MCP Apps `ui/notifications/size-changed` 将 Chat inline View 请求高度
+   从 Host 默认 320 px 提升到 480 px；fullscreen 往返和 mobile 均保持同一 iframe
+   instance。
 
 本报告证明 M4 功能候选满足里程碑退出条件，不代表 M0-M4 累计独立 Review 或
 Release Hardening 已完成。
@@ -35,7 +38,8 @@ Release Hardening 已完成。
 | `d2954c7` | `build: prepare distributable package` |
 | `ada73c0` | `fix: bound packed app resource size` |
 | `788a932` | `docs: close M4 validation` |
-| 本提交 | S5 Canvas Visual Harness、文本尺寸修复、定向验证和文档 |
+| `4000463` | S5 Canvas Visual Harness、文本尺寸修复、定向验证和文档 |
+| 本提交 | Chat inline View 480 px sizing Fix 和真实 DSH 验证 |
 
 Runtime harness、tarball、安装树、截图、下载和日志保留在 gitignored `.tmp/m4/`。
 
@@ -60,6 +64,7 @@ S5 定向检查：
 | `pnpm run build` | PASS | 本地命令结果 |
 | `node --test --test-concurrency=1 tests/m4-harness.test.mjs` | PASS，3/3 | 定向测试 |
 | packed DSH formula Harness | PASS | `.tmp/m4/s5/evidence/runtime-results.json` |
+| packed DSH inline sizing | PASS | `.tmp/m4/s5/inline-size-evidence/runtime-results.json` |
 
 Candidate：
 
@@ -90,6 +95,15 @@ S5 runtime candidate：
 - tarball SHA-256：
   `6ffa7484776de32f897af5f98ea35475049e9d0f6b6f8a3706e8c141b24ea3fe`
 - final source checks：typecheck PASS、build PASS、S5 定向测试 3/3 PASS
+
+Inline sizing Fix candidate：
+
+- 基线：`40004638cb76b9d2abc61c0f48943e7b0597b7a3`
+- tarball：`.tmp/m4/s5/inline-size-candidate/excalidraw-editor-mcp-0.0.0.tgz`
+- tarball size：6,317,319 bytes
+- tarball SHA-256：
+  `082e918bb9a2d7500a3b8144493d101409db6c68ec9bb53acd0f10e1028e72e9`
+- source checks：typecheck PASS、build PASS
 
 ## S4 Final Run Identity
 
@@ -183,6 +197,18 @@ Workspace、View instance 和 candidate。
 - 定向 MCP 测试另行验证标准 image content、owner 隔离、exact revision、PNG digest
   拒绝和显式 text 尺寸保持。
 
+### Chat Inline Sizing
+
+- desktop inline iframe 和 View root 均为 748x480。
+- fullscreen iframe 和 View root 均为 1440x956，高度不受 480 px inline 请求限制。
+- 返回 inline 后恢复为 748x480。
+- mobile inline iframe 和 View root 均为 262x480，无横向溢出。
+- 四个状态的 instance ID 均为
+  `00df31c5-ff11-4468-94f1-02a6fdc16a6f`，证明 fullscreen 往返复用同一 iframe。
+- page error 为空。
+- 首次恢复旧 Session 被 DSH history timeout 阻断，未进入尺寸断言；最终 PASS 使用
+  fresh Session 和一次 `open_canvas`，不复用失败尝试的页面状态。
+
 ## Evidence
 
 根目录：`.tmp/m4/final-runtime/`
@@ -235,10 +261,32 @@ S5 关键 SHA-256：
 - Canvas View：
   `f733e1bd6bece2231729bdb812b1965a06505b1ea2c73b800495e6d0fe5bb7bf`
 
+Inline sizing 根目录：`.tmp/m4/s5/inline-size-evidence/`
+
+| Artifact | 用途 |
+|---|---|
+| `runtime-results.json` | desktop/fullscreen/returned-inline/mobile 尺寸、instance 和 page error |
+| `desktop-inline.png` | 480 px desktop inline View |
+| `fullscreen.png` | 同一 instance 的 fullscreen View |
+| `mobile-inline.png` | 480 px mobile inline View |
+| `history-attempt-failure.png` | 隔离的旧 Session history timeout |
+
+Inline sizing 关键 SHA-256：
+
+- runtime results：
+  `b17af79b636e0b0a0c7a433570620ac12c7ca4578d65f62155f87f9fd3294179`
+- desktop inline：
+  `6fe0e35c81078eb12c649ce6032fd58c5f2b7ecacecbafe6d21ae4bd504ac1a8`
+- fullscreen：
+  `6a6bc0767c16c5495682b9dc9c1ac3c4524c57f97171dde86a1988e85894081f`
+- mobile inline：
+  `f81a7d0ae183d44771d92c48306ff53f8f51ad29c6fd7b7f0edf8ed915b1c3db`
+
 ## Cleanup
 
 - M4 Host process group `91548` 已退出。
 - S5 Host PID `11403` 及 packed MCP PID `15110` 已退出。
+- Inline sizing Host PID `92992` 及 packed MCP PID `98333` 已退出。
 - 3104 无 TCP listener，HTTP probe 返回 connection refused / `000`。
 - packed MCP、`runtime.mjs` 和 final browser profile 均无残留进程。
 - 旧 3080/3094/3097 和其他历史实例不属于 M4 ownership，未修改。
@@ -275,15 +323,21 @@ S5 关键 SHA-256：
 6. 查看 `evidence/teardown.txt`，确认 3104、packed MCP 和 Browser 无残留。
 7. 查看 S5 `runtime-results.json` 和 `formula-fixed.png`，确认第一次 capture 为
    `clipped=true`，模型扩宽同一元素后第二次为 `clipped=false`，且没有 Bash 调用。
+8. 查看 inline sizing `runtime-results.json` 和三张截图，确认 desktop/mobile inline
+   高度均为 480 px，fullscreen 高度为 956 px，往返期间 instance ID 不变。
 
 预期结果：画布 desktop/mobile 均为 Clean；live PNG 原字节保留，unused GIF 删除；
 超限导入不改变 revision；三种文件均由 Host 下载；离线无外部资源请求；teardown
 完整；Harness 证据与 Session owner、canvas path 和 exact saved revision 一致。
+Chat inline 高度为 480 px，fullscreen 仍填满 Host viewport，返回 inline 后恢复
+480 px，mobile 无横向溢出。
 
 失败判定：资源越界或超限仍写盘、live 资源被误删、导出文件为空或类型错误、View 依赖
 外网、desktop/mobile 身份漂移，或 M4 Host/MCP/Browser/3104 listener 残留。
 Harness 的跨 Session 证据被接受、revision 漂移仍返回图片、公式裁剪未闭环，或出现
 未授权 Bash 调用也判定失败。
+Inline 高度仍为 320 px、fullscreen 被固定为 480 px、往返后 iframe instance 变化，
+或 mobile 出现横向溢出也判定失败。
 
 ## Release Hardening
 

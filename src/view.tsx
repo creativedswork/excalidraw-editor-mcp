@@ -56,6 +56,7 @@ const app = new App(
   { strict: true },
 )
 const POLL_INTERVAL_MS = 5_000
+const INLINE_HEIGHT = 480
 
 type CanvasDocument = NonNullable<Parameters<typeof restore>[0]>
 
@@ -905,6 +906,7 @@ void app.connect().then(() => {
     document.documentElement.dataset.displayMode = context.displayMode
   }
   if (context?.theme !== undefined) document.documentElement.dataset.theme = context.theme
+  void app.sendSizeChanged({ height: INLINE_HEIGHT })
   createRoot(document.getElementById('root')!).render(<Canvas />)
 }).catch(error => {
   document.body.textContent = error instanceof Error ? error.message : String(error)
