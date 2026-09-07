@@ -26,7 +26,7 @@ test('packed install is complete and starts without external App assets', async 
   }))
   await execute('pnpm', [
     'add',
-    '--offline',
+    '--prefer-offline',
     '--ignore-scripts',
     join(sandbox, tarball),
   ], { cwd: sandbox, env })
