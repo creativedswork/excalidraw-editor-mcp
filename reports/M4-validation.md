@@ -1,14 +1,16 @@
 # M4 资源、导出与发布验证
 
-> 状态：`AWAITING_ACCEPTANCE`
+> 状态：`ACCEPTED`
 >
 > 验证日期：2026-09-07
+>
+> 验收日期：2026-09-07
 >
 > S5 基线：`4000463`
 
 ## 结论
 
-M4 S1-S5 已形成等待人工验收的功能候选。
+M4 S1-S5 已通过人工验收。
 
 1. Workspace 内 PNG/JPEG/GIF/WebP 可受限导入，内容 SHA-256 作为稳定 asset ID。
 2. URL、越界、symlink、hardlink、格式和资源限额在写入前拒绝。
@@ -39,7 +41,7 @@ Release Hardening 已完成。
 | `ada73c0` | `fix: bound packed app resource size` |
 | `788a932` | `docs: close M4 validation` |
 | `4000463` | S5 Canvas Visual Harness、文本尺寸修复、定向验证和文档 |
-| 本提交 | Chat inline View 480 px sizing Fix 和真实 DSH 验证 |
+| `b5cb307` | Chat inline View 480 px sizing Fix 和真实 DSH 验证 |
 
 Runtime harness、tarball、安装树、截图、下载和日志保留在 gitignored `.tmp/m4/`。
 
@@ -47,13 +49,13 @@ Runtime harness、tarball、安装树、截图、下载和日志保留在 gitign
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| `pnpm run release:check` | PASS，43/43 | `.tmp/m4/release-check-fix.log` |
+| `pnpm run release:check` | PASS，46/46 | `.tmp/github-release-check.log` |
 | default SDK 1.30 packed read | PASS，1/1 | `.tmp/m4/fix-packed-test.log` |
 | packed App Resource wire line | PASS，8,626,188 bytes，低于默认 10 MiB | packed test |
 | real Host View response | HTTP 200，8,626,317 bytes | `evidence/view-probe-*` |
 | isolated tarball install | PASS | `.tmp/m4/install/` |
 
-`release:check` 包含 typecheck、生产 build 和 43 项串行测试。Build 仍报告依赖中的既有
+`release:check` 包含 typecheck、生产 build 和 46 项串行测试。Build 仍报告依赖中的既有
 `EMPTY_IMPORT_META` warning；没有 build 或测试失败。
 
 S5 定向检查：
@@ -315,7 +317,7 @@ Inline sizing 关键 SHA-256：
 
 ## Acceptance Steps
 
-1. 复核 M4 commit、两个 candidate SHA-256、43/43 release gate 和 S5 3/3 定向测试。
+1. 复核 M4 commit、两个 candidate SHA-256、46/46 release gate 和 S5 3/3 定向测试。
 2. 查看 desktop/mobile 截图，确认同一画布在两种 viewport 下可见且没有 UI 重叠。
 3. 对照 `runtime-results.json` 检查同一 instance/revision、离线字体和资源 round trip。
 4. 对照 `tool-trace.txt` 检查导入、live 引用、清理、超限单次拒绝和三个 export。
@@ -353,4 +355,5 @@ Inline 高度仍为 320 px、fullscreen 被固定为 480 px、往返后 iframe i
 - 未实现网络图片、AI 图片生成、CRDT 或多人协作。
 - 未修改 DeepSeek Harness Agent Loop 或其他仓库。
 - 未执行累计独立 Review 或 Release Hardening。
-- 未执行 npm publish、push、PR、amend、rebase 或其他远端操作。
+- 本验证阶段未执行 npm publish、push、PR、amend、rebase 或其他远端操作；验收后的
+  GitHub 仓库发布是独立操作，不改变本报告的验证结论。

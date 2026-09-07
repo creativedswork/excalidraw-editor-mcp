@@ -11,6 +11,14 @@
     "editor",
     "deepseek"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/creativedswork/excalidraw-editor-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/creativedswork/excalidraw-editor-mcp/issues"
+  },
+  "homepage": "https://github.com/creativedswork/excalidraw-editor-mcp#readme",
   "type": "module",
   "packageManager": "pnpm@10.25.0",
   "engines": {
