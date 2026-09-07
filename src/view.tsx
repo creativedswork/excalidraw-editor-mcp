@@ -242,34 +242,6 @@ async function downloadScene(
   if (downloaded.isError) throw new Error('Host rejected the canvas download')
 }
 
-async function downloadExportResult(result: CallToolResult): Promise<void> {
-  if (result.isError) throw new Error(errorMessage(result))
-  const content = record(result.structuredContent)
-  const format = content?.format
-  if (
-    typeof content?.canvasPath !== 'string'
-    || typeof content.revision !== 'string'
-    || (format !== 'json' && format !== 'svg' && format !== 'png')
-    || content.filename !== exportFilename(content.canvasPath, format)
-  ) {
-    throw new Error('Export tool returned an invalid request')
-  }
-  const snapshot = await pullSnapshot(content.canvasPath)
-  if (snapshot === undefined || snapshot.revision !== content.revision) {
-    throw new Error('Canvas changed before export; retry export_canvas')
-  }
-  pendingCanvas = snapshot
-  renderCanvas?.(snapshot)
-  const restored = restore(snapshot.document, null, null)
-  await downloadScene(
-    format,
-    content.filename,
-    restored.elements,
-    restored.appState,
-    restored.files,
-  )
-}
-
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
@@ -883,11 +855,7 @@ function Canvas(): React.JSX.Element {
 }
 
 app.ontoolresult = result => {
-  const content = record(result.structuredContent)
-  const action = content?.delivery === 'ui/download-file'
-    ? downloadExportResult(result)
-    : pullCanvas(result)
-  void action.catch(error => {
+  void pullCanvas(result).catch(error => {
     const status = document.querySelector<HTMLOutputElement>('[data-m0-status]')
     if (status !== null) {
       status.textContent = error instanceof Error ? error.message : String(error)

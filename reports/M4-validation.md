@@ -179,8 +179,10 @@ Workspace、View instance 和 candidate。
 | SVG | `main.svg` | 714 | `6f8b238e1e712c07837cfce13e55c47f0318c2caa3b497d2ba6388cc0f154020` |
 | PNG | `main.png` | 1,715 | `bd388d9c1b212f618cf9f28d8285c535ee42d7f5b755d81f75b31788fa1fd766` |
 
-三次 `export_canvas` 均经真实 MCP App `tools/call` 和 `ui/download-file` 完成。
-文件分别通过 JSON、SVG 和 PNG 类型检查；PNG 为 260x180 RGBA。
+本次历史验证通过 `export_canvas` 和 `ui/download-file` 完成三种格式下载。
+文件分别通过 JSON、SVG 和 PNG 类型检查；PNG 为 260x180 RGBA。后续回归修复
+移除了模型可调用的 `export_canvas`；当前版本只在用户点击 View 中的导出按钮时
+调用同一 Browser 导出实现。
 
 ### Canvas Visual Harness
 

@@ -296,7 +296,7 @@ Conflict -> SavingCopy -> Clean
 | 图片 | 官方 UI 选择本地文件 | Workspace 本地资源导入和 assetId 引用 | 有界覆盖 |
 | 画布状态 | 官方 UI 修改背景、网格及可持久化属性 | `set_canvas` | 覆盖 |
 | 文件兼容 | 官方 load/restore/serialize | `inspect_canvas` + `replace_canvas` | 覆盖固定版本可恢复的数据 |
-| 导出 | 官方导出界面，经 Host 下载 | `export_canvas` | `.excalidraw`、SVG、PNG |
+| 导出 | View 中的显式按钮经 Host 下载 | 不暴露 | `.excalidraw`、SVG、PNG |
 | 视觉检查 | 人工查看 Browser View | `capture_canvas` | 有界 PNG + 文本裁剪诊断 |
 | Library | 官方组件具备 API，但属于独立资产模型 | 不暴露 | V1 排除 |
 | embeddable/iframe | 受 Sandbox、CSP 和外链策略影响 | 不暴露 | V1 排除 |
@@ -354,7 +354,6 @@ Excalidraw 产品的在线服务和瞬时 UI 控制不承诺完备。
 | `rename_canvas` | 在同一受管工程内重命名画布并更新默认入口 | 新 canvasPath |
 | `duplicate_canvas` | 复制画布并生成独立 revision | 新 canvas summary |
 | `delete_canvas` | 删除画布；要求 revision 和 `confirmCanvasPath` | 删除摘要 |
-| `export_canvas` | 导出 `.excalidraw`、SVG 或 PNG 到 Workspace 或用户下载 | 产物路径或下载资源 |
 | `capture_canvas` | 从已打开且 revision 精确匹配的 Browser View 捕获画布 | 标准 MCP PNG、摘要和文本裁剪诊断 |
 
 ### `apply_canvas_changes` 操作协议
@@ -456,10 +455,10 @@ V1 不允许工具抓取任意网络 URL。AI 创建 image 元素时引用
 | `report_canvas_capture` | 向同一 Session 的待处理 Harness 请求提交 PNG 和诊断 |
 
 `create_project`、`open_project`、`create_canvas` 和 `open_canvas`
-绑定 `ui://excalidraw-editor/app`。`export_canvas` 是唯一例外：它也绑定该
-Resource，使已加载的 Browser View 使用官方 Excalidraw SVG/PNG export API，
-再经 Host `ui/download-file` 交付下载。工程工具打开主画布；普通检查、AI
-修改和资源 mutation 工具不创建 View。
+绑定 `ui://excalidraw-editor/app`。工程工具打开主画布；普通检查、AI 修改和
+资源 mutation 工具不创建 View。导出不是模型工具；只有用户点击 View 中的
+JSON、SVG 或 PNG 按钮时，Browser View 才调用官方 Excalidraw 导出 API，并经
+Host `ui/download-file` 交付下载。
 
 ### Canvas Visual Harness
 

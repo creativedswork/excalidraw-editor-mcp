@@ -176,8 +176,8 @@
 ### 实现
 
 - 实现 `add_canvas_asset` 和 `remove_unused_assets`。
-- 实现 `export_canvas`，复用 Excalidraw 官方导出能力和 Host
-  `ui/download-file`。
+- 在 Browser View 中提供显式 JSON/SVG/PNG 导出按钮，复用 Excalidraw 官方
+  导出能力和 Host `ui/download-file`；保存、模型工具结果和 Harness 捕获不触发下载。
 - 实现 `capture_canvas` 与 app-only `report_canvas_capture`，复用官方
   `exportToBlob`，返回标准 MCP PNG 和有界文本布局诊断。
 - 保留 `add` 操作显式提供的 standalone text 宽高，避免 Node text-metrics shim
