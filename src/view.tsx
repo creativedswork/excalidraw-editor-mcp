@@ -76,13 +76,35 @@ interface CanvasCaptureCommand {
 }
 
 function normalizedCanvasDocument(document: CanvasDocument): CanvasDocument {
-  const restored = restore(document, null, null)
+  const restored = restoreCanvasDocument(document)
   return JSON.parse(serializeAsJSON(
     restored.elements,
     restored.appState,
     restored.files ?? {},
     'local',
   )) as CanvasDocument
+}
+
+function restoreCanvasDocument(document: CanvasDocument): ReturnType<typeof restore> {
+  const restored = restore(document, null, null)
+  const refreshed = restore(document, null, null, {
+    refreshDimensions: true,
+    repairBindings: true,
+  })
+  type RestoredElement = ReturnType<typeof restore>['elements'][number]
+  const refreshedBoundText = new Map<string, RestoredElement>(
+    refreshed.elements
+      .filter((element: RestoredElement) => (
+        element.type === 'text' && element.containerId !== null
+      ))
+      .map((element: RestoredElement) => [element.id, element]),
+  )
+  return {
+    ...restored,
+    elements: restored.elements.map((element: RestoredElement) => (
+      refreshedBoundText.get(element.id) ?? element
+    )),
+  }
 }
 
 let pendingCanvas: CanvasSnapshot | undefined
@@ -317,7 +339,7 @@ function Canvas(): React.JSX.Element {
   const baseRevision = useRef('')
   const draft = useRef<CanvasDocument>()
   const apiRef = useRef<ExcalidrawImperativeAPI>()
-  const settleFrame = useRef<number>()
+  const settleTimer = useRef<number>()
   const instanceId = useRef(crypto.randomUUID())
   const modelContextRevision = useRef<string>()
   const handledCaptureIds = useRef(new Set<string>())
@@ -329,11 +351,11 @@ function Canvas(): React.JSX.Element {
     setSyncState(value)
   }
   const scheduleProgrammaticSettled = (): void => {
-    if (settleFrame.current !== undefined) {
-      window.cancelAnimationFrame(settleFrame.current)
+    if (settleTimer.current !== undefined) {
+      window.clearTimeout(settleTimer.current)
     }
-    settleFrame.current = window.requestAnimationFrame(() => {
-      settleFrame.current = undefined
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = undefined
       if (syncStateRef.current !== 'Loading') return
       const currentApi = apiRef.current
       if (currentApi === undefined) {
@@ -349,12 +371,12 @@ function Canvas(): React.JSX.Element {
       baseSummary.current = canvasContentSummary(document)
       draft.current = document
       setEditorState('Clean')
-    })
+    }, 16)
   }
   const beginProgrammaticChange = (): void => {
-    if (settleFrame.current !== undefined) {
-      window.cancelAnimationFrame(settleFrame.current)
-      settleFrame.current = undefined
+    if (settleTimer.current !== undefined) {
+      window.clearTimeout(settleTimer.current)
+      settleTimer.current = undefined
     }
     setEditorState('Loading')
   }
@@ -381,8 +403,8 @@ function Canvas(): React.JSX.Element {
   }, [canvas])
 
   useEffect(() => () => {
-    if (settleFrame.current !== undefined) {
-      window.cancelAnimationFrame(settleFrame.current)
+    if (settleTimer.current !== undefined) {
+      window.clearTimeout(settleTimer.current)
     }
   }, [])
 
@@ -522,7 +544,7 @@ function Canvas(): React.JSX.Element {
     snapshot: CanvasSnapshot,
     preserveView = false,
   ): void => {
-    const restored = restore(snapshot.document, null, null)
+    const restored = restoreCanvasDocument(snapshot.document)
     const currentAppState = api?.getAppState()
     const appState = preserveView && currentAppState !== undefined
       ? appStateForExternalUpdate(
@@ -745,7 +767,7 @@ function Canvas(): React.JSX.Element {
         },
         scrollToContent: true,
       }
-    : restore(canvas.document, null, null)
+    : restoreCanvasDocument(canvas.document)
 
   return (
     <main data-excalidraw-m0 data-display-mode={displayMode}>
